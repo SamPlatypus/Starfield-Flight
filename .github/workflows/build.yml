@@ -1,0 +1,178 @@
+# Build, test and ship Starfield Flight on every push:
+#   web      unit tests, production build, end-to-end tests in headless Chromium
+#   android  Capacitor sync + Gradle release build -> signed APK, uploaded as an artifact and
+#            published as a GitHub Release (the in-app "Download Android APK" button points at
+#            releases/latest/download/starfield-flight.apk)
+#   pages    deploys the offline PWA to GitHub Pages (only once Pages is enabled:
+#            Settings -> Pages -> Source: GitHub Actions)
+name: Build
+
+on:
+  push:
+    branches: ['**']
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  web:
+    name: Web app (tests + build)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Unit tests (catalogue accuracy, culling, flight model)
+        run: npm test
+      - name: Production build
+        run: npm run build
+        env:
+          APP_VERSION: 1.0.${{ github.run_number }}
+      - name: Install Chromium for end-to-end tests
+        run: npx playwright install --with-deps chromium
+      - name: End-to-end tests (rendering, touch controls, Sol autopilot, offline)
+        run: npm run test:e2e -- --shots e2e-screenshots
+      - uses: actions/upload-artifact@v7
+        with:
+          name: web-dist
+          path: dist/
+          retention-days: 7
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: e2e-screenshots
+          path: e2e-screenshots/
+          retention-days: 7
+          if-no-files-found: ignore
+
+  android:
+    name: Android APK
+    needs: web
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: write   # publish the GitHub Release
+    env:
+      VERSION_CODE: ${{ github.run_number }}
+      VERSION_NAME: 1.0.${{ github.run_number }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - uses: actions/download-artifact@v8
+        with:
+          name: web-dist
+          path: dist/
+      - uses: actions/setup-java@v6
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: android-actions/setup-android@v4
+        with:
+          packages: 'platform-tools platforms;android-36 build-tools;36.0.0'
+      - uses: gradle/actions/setup-gradle@v6
+      - name: Copy the web app into the Android project
+        run: npx cap sync android
+      - name: Signing key
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [ -n "$KEYSTORE_BASE64" ]; then
+            echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release-key.p12"
+            echo "ANDROID_KEYSTORE_FILE=$RUNNER_TEMP/release-key.p12" >> "$GITHUB_ENV"
+            echo "Signing with the private key from repository secrets." >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "::notice title=Development signing key::No ANDROID_KEYSTORE_BASE64 secret, so the APK is signed with the public development key in android/keystore. See README > Signing."
+            echo "Signed with the public development key (android/keystore)." >> "$GITHUB_STEP_SUMMARY"
+          fi
+      - name: Build release APK (Gradle)
+        working-directory: android
+        env:
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: ./gradlew --no-daemon assembleRelease
+      - name: Verify and collect the APK
+        run: |
+          mkdir -p out
+          apk=android/app/build/outputs/apk/release/app-release.apk
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --print-certs "$apk" | tee -a "$GITHUB_STEP_SUMMARY"
+          cp "$apk" out/starfield-flight.apk
+          cp "$apk" "out/starfield-flight-$VERSION_NAME.apk"
+          (cd out && sha256sum *.apk > SHA256SUMS.txt)
+          echo "APK $(du -h out/starfield-flight.apk | cut -f1), version $VERSION_NAME ($VERSION_CODE)" >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: starfield-flight-apk
+          path: out/
+      - name: Publish GitHub Release
+        if: github.event_name != 'pull_request'
+        uses: softprops/action-gh-release@v3
+        with:
+          tag_name: v${{ env.VERSION_NAME }}
+          name: Starfield Flight ${{ env.VERSION_NAME }}
+          target_commitish: ${{ github.sha }}
+          prerelease: ${{ github.ref_name != github.event.repository.default_branch && !startsWith(github.ref, 'refs/tags/') }}
+          make_latest: ${{ (github.ref_name == github.event.repository.default_branch || startsWith(github.ref, 'refs/tags/')) && 'true' || 'false' }}
+          files: |
+            out/starfield-flight.apk
+            out/starfield-flight-${{ env.VERSION_NAME }}.apk
+            out/SHA256SUMS.txt
+          body: |
+            **Install on Android:** download `starfield-flight.apk` on your phone, open it and allow installing from this source when asked. It works fully offline.
+
+            Built from ${{ github.sha }} on `${{ github.ref_name }}`. Version ${{ env.VERSION_NAME }} (code ${{ env.VERSION_CODE }}); each build installs as an update over the previous one.
+
+            Star data: Yale Bright Star Catalogue, AT-HYG v4.0 (CC BY-SA 4.0) with Gaia DR3 and Hipparcos distances, and the Gaia Catalogue of Nearby Stars. Milky Way: NASA/Goddard SVS Deep Star Maps 2020. See NOTICE.md.
+
+  pages:
+    name: Web app on GitHub Pages
+    needs: web
+    if: github.event_name != 'pull_request' && github.ref_name == github.event.repository.default_branch
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - name: Is GitHub Pages enabled?
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh api "repos/${{ github.repository }}/pages" --jq .build_type > build_type.txt 2>/dev/null; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+            echo "Pages build type: $(cat build_type.txt)"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=GitHub Pages is off::Enable Settings -> Pages -> Source: GitHub Actions to publish the installable web app."
+          fi
+      - uses: actions/download-artifact@v8
+        if: steps.check.outputs.enabled == 'true'
+        with:
+          name: web-dist
+          path: dist/
+      - uses: actions/upload-pages-artifact@v5
+        if: steps.check.outputs.enabled == 'true'
+        with:
+          path: dist/
+      - id: deploy
+        if: steps.check.outputs.enabled == 'true'
+        uses: actions/deploy-pages@v5
