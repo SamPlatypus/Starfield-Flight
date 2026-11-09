@@ -266,9 +266,9 @@ export class Hud {
     const sunR = sun && !sun.behind ? sun.r : 0;
     this.setDisc(this.sol, sunR, sunR);
     const solM = this.placeMarker(this.sol, this.solArrow, this.solTag, [0, 0, 0], proj, bodies);
-    // Among the planets the Sun needs no caption (the readout has its distance): just the
-    // ring, so the planets crowded round it keep their names.
-    const quiet = sS > 0.5 && !solM.edge && sunR <= 15;
+    // Among the planets (within ~50 AU) the Sun needs no caption, the readout has its
+    // distance: just the ring, so the planets crowded round it keep their names.
+    const quiet = sS > 0.5 && solDistPc * AU_PER_PC < 50 && !solM.edge && sunR <= 15;
     this.sol.classList.toggle('quiet', quiet);
     const taken = [quiet ? { x0: solM.x - 12, x1: solM.x + 12, y0: solM.y - 12, y1: solM.y + 12 } : this.markerBox(solM, sunR, `SOL ${this.solDist.textContent}`)];
     this.sol.classList.toggle('autopilot', ship.autopilot && !!ship.target?.home);
@@ -384,6 +384,7 @@ export class Hud {
 
   updateBodyLabels(f, bodies, textTick, skipId, taken) {
     const { proj } = f;
+    const sun = bodies.find((o) => o.body.id === 'sun');
     if (skipId) this.bodyLabels.drop(skipId); // the target marker names it now
     const r = this.edgeRect(proj.w, proj.h);
     const blockers = this.blockerRects(proj.w, proj.h);
@@ -394,6 +395,7 @@ export class Hud {
       if (b.id === 'sun' || b.id === skipId || s.behind) continue; // the Sun has the SOL tag
       if (b.type === 'moon' && !s.visible) continue;
       if (s.x < r.x0 || s.x > r.x1 || s.y < r.y0 || s.y > r.y1 || s.r > big) continue;
+      if (b.type !== 'moon' && sun && !sun.behind && Math.hypot(s.x - sun.x, s.y - sun.y) < sun.r + 24) continue; // lost in the Sun's glare
       if (b.type === 'moon') {
         // only once it stands clear of its planet (and its rings)
         const p = bodies.find((o) => o.body.id === b.parent);
