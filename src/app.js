@@ -1,6 +1,7 @@
 // App controller: loads the data, owns the ship, and runs the frame loop
 // (simulate -> cull -> render -> HUD) once per display refresh.
 import { parseCatalog, parseNames } from './catalog.js';
+import { fetchWithProgress } from './load.js';
 import { Renderer } from './render/renderer.js';
 import { Culler, frustumPlanes } from './culling.js';
 import { Ship, speedToThrottle, throttleToSpeed } from './flight.js';
@@ -17,25 +18,6 @@ const SKY_FACES = ['px', 'nx', 'py', 'ny', 'pz', 'nz'];
 const DPR_CAP = 2;
 const START_HEADING = radec(83.8, -1.2);   // Orion's belt
 const START_OFFSET = 0.02;                 // pc from the Sun (~4,100 AU), already outbound
-
-async function fetchWithProgress(url, onProgress) {
-  const res = await fetch(url);
-  if (!res.ok) throw new Error(`${url}: HTTP ${res.status}`);
-  const total = +res.headers.get('content-length') || 0;
-  if (!res.body || !total) return res.arrayBuffer();
-  const reader = res.body.getReader();
-  const buf = new Uint8Array(total);
-  let got = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    if (got + value.length > buf.length) return new Blob([buf.subarray(0, got), value]).arrayBuffer(); // compressed size lied
-    buf.set(value, got);
-    got += value.length;
-    onProgress(got / total);
-  }
-  return got === total ? buf.buffer : buf.slice(0, got).buffer;
-}
 
 function loadImage(url) {
   return new Promise((resolve, reject) => {
