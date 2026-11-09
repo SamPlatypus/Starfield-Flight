@@ -38,7 +38,7 @@ jobs:
       - name: Production build
         run: npm run build
         env:
-          APP_VERSION: 1.0.${{ github.run_number }}
+          APP_VERSION: 1.1.${{ github.run_number }}
       - name: Install Chromium for end-to-end tests
         run: npx playwright install --with-deps chromium
       - name: End-to-end tests (rendering, touch controls, Sol autopilot, offline)
@@ -65,7 +65,7 @@ jobs:
       contents: write   # publish the GitHub Release
     env:
       VERSION_CODE: ${{ github.run_number }}
-      VERSION_NAME: 1.0.${{ github.run_number }}
+      VERSION_NAME: 1.1.${{ github.run_number }}
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-node@v7
@@ -137,7 +137,7 @@ jobs:
 
             Built from ${{ github.sha }} on `${{ github.ref_name }}`. Version ${{ env.VERSION_NAME }} (code ${{ env.VERSION_CODE }}); each build installs as an update over the previous one.
 
-            Star data: Yale Bright Star Catalogue, AT-HYG v4.0 (CC BY-SA 4.0) with Gaia DR3 and Hipparcos distances, and the Gaia Catalogue of Nearby Stars. Milky Way: NASA/Goddard SVS Deep Star Maps 2020. See NOTICE.md.
+            Star data: Yale Bright Star Catalogue, AT-HYG v4.0 (CC BY-SA 4.0) with Gaia DR3 and Hipparcos distances, and the Gaia Catalogue of Nearby Stars. Milky Way: NASA/Goddard SVS Deep Star Maps 2020. Constellation figures: d3-celestial. Orbits: JPL elements and Meeus's lunar theory. See NOTICE.md.
 
   pages:
     name: Web app on GitHub Pages

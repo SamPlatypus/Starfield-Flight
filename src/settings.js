@@ -13,9 +13,18 @@ export const DEFAULTS = {
   invertPitch: false,
   haptics: true,
   stats: false,
+  lines: true,         // constellation stick figures
+  conNames: false,     // constellation names (IAU abbreviations)
+  orbits: true,        // Solar System orbits
   hintSeen: false,
   installDismissed: false,
 };
+
+// Solar System clock rates: [label, simulated seconds per real second].
+export const TIME_RATES = [
+  ['Paused', 0], ['Real time', 1], ['1 min/s', 60], ['1 hour/s', 3600], ['1 day/s', 86400],
+  ['1 week/s', 604800], ['1 month/s', 2629800], ['1 year/s', 31557600],
+];
 
 // Density slider -> faintest apparent magnitude drawn. 6.5 is the naked-eye limit.
 export const MAG_MIN = 4.5;

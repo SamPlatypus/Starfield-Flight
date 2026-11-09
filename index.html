@@ -11,7 +11,7 @@
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <meta name="description" content="Fly at warp speed through 626,000 real stars in 3D: Yale Bright Star Catalogue, Hipparcos and Gaia distances. Works fully offline.">
+  <meta name="description" content="Fly at warp speed through 626,000 real stars in 3D and into a live Solar System: Yale Bright Star Catalogue, Hipparcos and Gaia distances, JPL orbits. Works fully offline.">
   <title>Starfield Flight</title>
   <link rel="manifest" href="manifest.webmanifest">
   <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
@@ -39,7 +39,7 @@
       <span class="tag"><b>SOL</b> <span class="dist"></span></span>
     </button>
 
-    <!-- Selected star -->
+    <!-- Selected star or planet -->
     <div id="target" class="marker" aria-hidden="true">
       <svg class="reticle" viewBox="-20 -20 40 40"><path d="M-12-6v-6h6M6-12h6v6M12 6v6H6M-6 12h-6V6" /></svg>
       <svg class="arrow" viewBox="-20 -20 40 40"><path d="M-7-9L9 0-7 9-3 0z" /></svg>
@@ -50,8 +50,12 @@
     <div id="readout" class="chrome">
       <div class="speed"><span class="value">0</span></div>
       <div class="sub"><span class="sol-dist"></span><span class="mode"></span></div>
+      <div class="clock"></div>
     </div>
 
+    <button id="search-btn" class="chrome round" type="button" aria-label="Search stars and planets">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M10 3a7 7 0 015.6 11.2l5.1 5.1-1.4 1.4-5.1-5.1A7 7 0 1110 3zm0 2a5 5 0 100 10 5 5 0 000-10z"/></svg>
+    </button>
     <button id="menu-btn" class="chrome round" type="button" aria-label="Menu">
       <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>
     </button>
@@ -82,7 +86,29 @@
       <p><b>Drag</b> to steer · <b>Tap</b> a star to turn to it</p>
       <p><b>Hold</b> anywhere or ⚡ to boost · <b>Pinch</b> to change speed</p>
       <p>The <b>SOL</b> marker always points home — tap it to fly back</p>
+      <p><b>🔍</b> finds any star or planet</p>
     </div>
+  </div>
+
+  <!-- Search -->
+  <div id="search" class="sheetish panel" hidden role="dialog" aria-label="Search">
+    <div class="search-row">
+      <input type="search" placeholder="Star, planet or designation" aria-label="Search stars and planets"
+        autocomplete="off" autocapitalize="off" autocorrect="off" spellcheck="false" enterkeyhint="search">
+      <button type="button" class="close" aria-label="Close search">×</button>
+    </div>
+    <p class="heading note"></p>
+    <ul class="results"></ul>
+  </div>
+
+  <!-- Favourites -->
+  <div id="favourites" class="sheetish panel" hidden role="dialog" aria-label="Favourites">
+    <div class="sheet-head">
+      <h2>Favourites <span class="count"></span></h2>
+      <button type="button" class="close" aria-label="Close favourites">×</button>
+    </div>
+    <p class="empty note">No favourites yet. Open a star or planet (tap it, or find it with 🔍) and tap <b>☆ Save</b>.</p>
+    <ul class="favs"></ul>
   </div>
 
   <!-- Star info card -->
@@ -91,7 +117,10 @@
     <h2 class="title"></h2>
     <p class="subtitle"></p>
     <dl class="facts"></dl>
-    <div class="actions"><button type="button" class="fly primary">Fly here</button></div>
+    <div class="actions">
+      <button type="button" class="fav" aria-pressed="false">☆ Save</button>
+      <button type="button" class="fly primary">Fly here</button>
+    </div>
   </div>
 
   <!-- Menu -->
@@ -102,6 +131,8 @@
     </div>
     <div class="actions grid">
       <button type="button" data-action="home" class="primary">Fly home to Sol</button>
+      <button type="button" data-action="search">Search stars &amp; planets</button>
+      <button type="button" data-action="favourites">Favourites</button>
       <button type="button" data-action="jump">Jump to a random star</button>
       <button type="button" data-action="stop">All stop</button>
       <button type="button" data-action="cinema">Hide controls</button>
@@ -121,18 +152,30 @@
     <label class="row">Milky Way <input type="range" id="set-milkyway" min="0" max="1" step="0.01"></label>
     <label class="row">Field of view <input type="range" id="set-fov" min="40" max="100" step="1"></label>
     <label class="row">Star brightness <input type="range" id="set-gain" min="0.4" max="2" step="0.01"></label>
-    <label class="row check">Star names <input type="checkbox" id="set-labels"></label>
+    <label class="row check">Star &amp; planet names <input type="checkbox" id="set-labels"></label>
+    <label class="row check">Constellation lines <input type="checkbox" id="set-lines"></label>
+    <label class="row check">Constellation names <input type="checkbox" id="set-connames"></label>
     <label class="row check">Keep galactic plane level <input type="checkbox" id="set-level"></label>
     <label class="row check">Invert pitch <input type="checkbox" id="set-invert"></label>
     <label class="row check">Haptics <input type="checkbox" id="set-haptics"></label>
     <label class="row check">Performance overlay <input type="checkbox" id="set-stats"></label>
+
+    <h3>Solar System</h3>
+    <label class="row check">Orbits <input type="checkbox" id="set-orbits"></label>
+    <div class="row">Clock <span id="clock-now" class="clock-now"></span></div>
+    <div id="time-rates" class="seg" role="group" aria-label="Clock speed"></div>
+    <div class="actions"><button type="button" id="time-now">Back to now</button></div>
+    <p class="note">The planets move on their real orbits (JPL elements) for the time shown.
+      Speed the clock up to watch them; within ~0.2 ly of the Sun distances switch to AU and km.</p>
 
     <h3>About</h3>
     <p class="note">Every point is a real star at its catalogued 3D position: the <b>Yale Bright Star Catalogue</b>
       (names, colours, brightness of 8,401 naked-eye stars) with distances from <b>Gaia DR3</b> and
       <b>Hipparcos</b> via AT-HYG, plus the <b>Gaia Catalogue of Nearby Stars</b> for the faint neighbours
       within 326 light-years. Brightness follows the inverse-square law from wherever you are.
-      Milky Way glow: NASA/Goddard SVS Deep Star Maps 2020 (Gaia DR2: ESA/Gaia/DPAC).</p>
+      Milky Way glow: NASA/Goddard SVS Deep Star Maps 2020 (Gaia DR2: ESA/Gaia/DPAC).
+      Constellation figures: d3-celestial by Olaf Frohn. Planet and moon orbits: JPL approximate
+      Keplerian elements and mean satellite elements, Meeus's lunar theory, IAU rotation models.</p>
     <p class="note" id="about-stats"></p>
     <p class="note version" id="about-version"></p>
   </div>

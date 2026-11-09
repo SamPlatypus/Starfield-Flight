@@ -22,6 +22,7 @@
 //   public/data/names.json  labels for named / designated stars
 
 import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { gunzipSync } from 'node:zlib';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -131,7 +132,7 @@ for (const r of at.rows) {
   const proper = r[A.proper];
   if (proper === 'Sol') continue; // added explicitly below
   const row = {
-    gaia: r[A.gaia], hr: r[A.hr] ? +r[A.hr] : 0, gl: r[A.gl], proper,
+    gaia: r[A.gaia], hr: r[A.hr] ? +r[A.hr] : 0, gl: r[A.gl], proper, bayer: r[A.bayer], flam: +r[A.flam] || 0, con: r[A.con],
     ra: num(r[A.ra]) * 15, dec: num(r[A.dec]), dist, mag: num(r[A.mag]), ci: num(r[A.ci]),
     x: num(r[A.x0]), y: num(r[A.y0]), z: num(r[A.z0]), spect: r[A.spect], used: false,
   };
@@ -203,6 +204,12 @@ const sol = pushStar({ x: 0, y: 0, z: 0, M: 4.83, bv: 0.65, src: 'sun' });
 names.push([sol, 'Sol', 'the Sun', 'G2V']);
 
 let srcCount = { yale: 0, athyg: 0, gcns: 0 };
+const yaleStar = new Array(yale.count).fill(null);
+const yaleBayer = new Map(), yaleFlam = new Map();
+for (let i = 0; i < yale.bayer.length; i += 4) yaleBayer.set(yale.bayer[i], [yale.bayer[i + 1], yale.bayer[i + 2], yale.bayer[i + 3]]);
+for (let i = 0; i < yale.flam.length; i += 3) yaleFlam.set(yale.flam[i], [yale.flam[i + 1], yale.flam[i + 2]]);
+const conIndex = new Map(cons.abbr.map((a, i) => [a.toUpperCase(), i]));
+const GREEK3 = ['ALP', 'BET', 'GAM', 'DEL', 'EPS', 'ZET', 'ETA', 'THE', 'IOT', 'KAP', 'LAM', 'MU', 'NU', 'XI', 'OMI', 'PI', 'RHO', 'SIG', 'TAU', 'UPS', 'PHI', 'CHI', 'PSI', 'OME'];
 for (let i = 0; i < yale.count; i++) {
   const m = yaleMatch[i];
   if (!m) continue;
@@ -211,7 +218,10 @@ for (let i = 0; i < yale.count; i++) {
   const bv = yale.bv[i] ?? (Number.isFinite(m.ci) ? m.ci : bvFromSpectrum(yale.sp[i]));
   const s = pushStar({ x: vx * d, y: vy * d, z: vz * d, M: absMag(yale.mag[i], d), bv, src: 'yale', hr: yale.hr[i] });
   srcCount.yale++;
+  yaleStar[i] = s;
   const name = yaleName.get(i) || (m.proper && !m.companion ? m.proper : '');
+  const bay = yaleBayer.get(i), fl = yaleFlam.get(i);
+  s.search = { name, greek: bay ? bay[0] : 0, sup: bay ? bay[1] : 0, con: bay ? bay[2] : fl ? fl[1] : -1, flam: fl ? fl[0] : 0, hr: yale.hr[i], gl: '' };
   const desig = yaleDesig.get(i) || `HR ${yale.hr[i]}`;
   // Label every IAU-named Yale star, plus designated stars bright enough to stand out.
   const note = m.estimated ? ESTIMATED_NOTE : '';
@@ -234,6 +244,11 @@ for (const row of atRows) {
   const bv = Number.isFinite(row.ci) ? row.ci : bvFromSpectrum(row.spect);
   const s = pushStar({ x: row.x, y: row.y, z: row.z, M, bv, src: 'athyg', gaia: row.gaia, v: row.v, dist: row.dist, V: row.mag });
   srcCount.athyg++;
+  if (row.proper || row.bayer || row.flam || row.gl) {
+    const [g3, supText] = (row.bayer || '').toUpperCase().split('-');
+    const con = row.con ? conIndex.get(row.con.toUpperCase()) ?? -1 : -1;
+    s.search = { name: row.proper || '', greek: GREEK3.indexOf(g3) + 1, sup: +supText || 0, con, flam: row.flam, hr: 0, gl: row.gl ? `Gl ${row.gl}` : '' };
+  }
   if (row.proper) names.push([s, row.proper, row.gl ? `Gl ${row.gl}` : '', row.spect]);
   else if (row.gl && row.dist < 6) nearestGl.push([s, `Gl ${row.gl}`, '', row.spect]);
 }
@@ -389,8 +404,13 @@ addSection('nodeLinks', nodeLinks);
 addSection('qx', qx); addSection('qy', qy); addSection('qz', qz);
 addSection('mag', qm); addSection('bv', qc);
 
+// Fingerprint of the star data: saved favourites remember it, so a rebuilt catalogue (new
+// star order) is detected and favourites are re-resolved by position.
+const idHash = createHash('sha256');
+for (const [, arr] of sections) idHash.update(Buffer.from(arr.buffer, arr.byteOffset, arr.byteLength));
+const dataId = idHash.digest('hex').slice(0, 16);
 const header = {
-  format: 'starfield-flight/stars', version: 1,
+  format: 'starfield-flight/stars', version: 1, dataId,
   starCount: N, nodeCount: nodes.length,
   bands, bv: { min: BV_MIN, step: BV_STEP }, quant: 32767,
   sources: {
@@ -442,3 +462,43 @@ for (const [s, name, desig, sp, note] of names) {
 labels.sort((a, b) => a[0] - b[0]);
 writeFileSync(join(OUT, 'names.json'), JSON.stringify({ fields: ['index', 'name', 'designation', 'spectrum', 'note?'], labels }) + '\n');
 log(`wrote public/data/names.json: ${labels.length} labels`);
+
+// ------------------------------------------------------------------ 9. search index
+// Every designated star: [index, proper name, Bayer letter (1-24), superscript, constellation,
+// Flamsteed number, HR number, Gliese id]; trailing empty fields dropped. The app expands
+// these into the spellings people type ("Alpha Centauri", "alf Cen", "61 Cyg", "HR 7001").
+const searchRows = [];
+for (const st of order) {
+  const q = st.search;
+  if (!q || st.src === 'sun') continue;
+  const row = [indexOf.get(st), q.name || '', q.greek || 0, q.sup || 0, q.con ?? -1, q.flam || 0, q.hr || 0, q.gl || ''];
+  while (row.length > 2 && (row[row.length - 1] === 0 || row[row.length - 1] === '' || row[row.length - 1] === -1)) row.pop();
+  searchRows.push(row);
+}
+writeFileSync(join(OUT, 'search.json'), JSON.stringify({
+  fields: ['index', 'name', 'bayer', 'sup', 'con', 'flamsteed', 'hr', 'gliese'],
+  con: cons.abbr, gen: cons.gen, name: cons.name, stars: searchRows,
+}) + '\n');
+log(`wrote public/data/search.json: ${searchRows.length} designated stars`);
+
+// ------------------------------------------------------------------ 10. constellation figures
+// d3-celestial stick figures (as matched to Yale stars by Star-Sky), re-pointed at the 3D
+// catalogue: segments join real stars, so the figures distort correctly as you fly.
+const figures = [];
+let segCount = 0, segDropped = 0;
+for (const [con, polys] of cons.lines) {
+  const pairs = [];
+  for (const poly of polys) {
+    for (let k = 0; k + 1 < poly.length; k++) {
+      const a = poly[k] >= 0 ? yaleStar[poly[k]] : null, b = poly[k + 1] >= 0 ? yaleStar[poly[k + 1]] : null;
+      if (!a || !b) { segDropped++; continue; }
+      pairs.push(indexOf.get(a), indexOf.get(b));
+      segCount++;
+    }
+  }
+  figures.push([con, ...pairs]);
+}
+writeFileSync(join(OUT, 'constellations.json'), JSON.stringify({
+  fields: ['constellation', 'star a', 'star b', '...'], abbr: cons.abbr, name: cons.name, rank: cons.rank, figures,
+}) + '\n');
+log(`wrote public/data/constellations.json: ${figures.length} figures, ${segCount} segments (${segDropped} dropped)`);

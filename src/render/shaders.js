@@ -28,6 +28,8 @@ uniform float uMagLimit;  // faintest apparent magnitude drawn
 uniform float uPx;        // pixel scale of the point spread function
 uniform float uGain;      // overall brightness
 uniform float uSpread;    // how strongly a streak spreads its light (1 = photometric)
+uniform int uHideIndex;   // Sol, handed over to the Solar System renderer near home
+uniform float uHideScale; // 1 = drawn normally, 0 = hidden
 
 out highp vec2 vLocal;    // pixels: x along the streak from the tail, y across
 flat out float vLen;
@@ -69,6 +71,10 @@ void main() {
   // Photometry: flux relative to the limiting magnitude, fading in over the last 0.8 mag.
   float F = exp2(1.3287712 * min(dm, 40.0));      // 10^(0.4 dm)
   float fade = smoothstep(0.0, 0.8, dm);
+  if (star == uHideIndex) {
+    if (uHideScale < 0.001) return;
+    fade *= uHideScale;
+  }
   // Point spread: faint stars are a dim Gaussian; once the core saturates the disc grows
   // with the fourth root of the flux and a soft halo appears, like a photograph of the sky.
   float raw = 0.13 * sqrt(F) * uGain;
@@ -175,5 +181,102 @@ void main() {
   // Dither to hide banding in the dark sky.
   float n = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453);
   outColour = vec4(c + (n - 0.5) / 255.0, 1.0);
+}
+`;
+
+// Constellation figures: one instanced quad per segment between two catalogue stars.
+// Opacity follows src/constellations.js: both stars must be naked-eye bright from here.
+export const LINE_VS = `#version 300 es
+precision highp float;
+precision highp int;
+precision highp sampler2D;
+uniform sampler2D uStars;
+uniform vec3 uCamHi;
+uniform vec3 uCamLo;
+uniform mat3 uView;
+uniform vec2 uTan;
+uniform vec2 uRes;
+uniform float uMagLimit;
+uniform float uAlpha;     // base opacity x distance-from-Sun fade x toggle
+uniform float uPx;
+in uvec2 aPair;
+out highp vec2 vLocal;
+flat out float vLen;
+flat out float vAlpha;
+flat out float vHalfW;
+const float NEAR = 2e-6;
+
+vec4 star(uint i) { return texelFetch(uStars, ivec2(int(i & 2047u), int(i >> 11u)), 0); }
+float appMag(vec4 t, vec3 rel) {
+  float ci = floor(t.w * (1.0 / 64.0));
+  return t.w - ci * 64.0 - 16.0 + 1.5051500 * log2(max(length(rel), 1e-7)) - 5.0;
+}
+vec2 toPixels(vec3 p) { return (vec2(p.x / (-p.z * uTan.x), p.y / (-p.z * uTan.y)) * 0.5 + 0.5) * uRes; }
+// Clips the view-space segment a-b to the view frustum widened by uTan * 1.5 and to the near
+// plane, so lines from points beside or behind the camera stay exact and bounded on screen.
+bool clipSegment(inout vec3 a, inout vec3 b, vec2 tanK, float near) {
+  float t0 = 0.0, t1 = 1.0;
+  vec3 d = b - a;
+  for (int i = 0; i < 5; i++) {
+    float fa, fb;
+    if (i == 0) { fa = -a.z - near; fb = -b.z - near; }
+    else if (i == 1) { fa = -a.z * tanK.x + a.x; fb = -b.z * tanK.x + b.x; }
+    else if (i == 2) { fa = -a.z * tanK.x - a.x; fb = -b.z * tanK.x - b.x; }
+    else if (i == 3) { fa = -a.z * tanK.y + a.y; fb = -b.z * tanK.y + b.y; }
+    else { fa = -a.z * tanK.y - a.y; fb = -b.z * tanK.y - b.y; }
+    if (fa < 0.0 && fb < 0.0) return false;
+    if (fa < 0.0) t0 = max(t0, fa / (fa - fb));
+    else if (fb < 0.0) t1 = min(t1, fa / (fa - fb));
+  }
+  if (t0 >= t1) return false;
+  vec3 a0 = a;
+  a = a0 + d * t0;
+  b = a0 + d * t1;
+  return true;
+}
+
+void main() {
+  gl_Position = vec4(0.0, 0.0, 2.0, 1.0);
+  vec4 ta = star(aPair.x), tb = star(aPair.y);
+  vec3 ra = (ta.xyz - uCamHi) - uCamLo, rb = (tb.xyz - uCamHi) - uCamLo;
+  float faint = max(appMag(ta, ra), appMag(tb, rb));
+  float lim = min(uMagLimit, 6.5) - 0.2;
+  float a = uAlpha * smoothstep(0.0, 1.0, (lim + 1.2 - faint) / 1.2);
+  if (a < 0.004) return;
+  vec3 pa = uView * ra, pb = uView * rb;
+  // a clipped end lies off screen, where its gap does not matter
+  if (!clipSegment(pa, pb, uTan * 1.5, NEAR)) return;
+  vec2 A = toPixels(pa), B = toPixels(pb);
+  vec2 d = B - A;
+  float L = length(d);
+  if (L < 1.0) return;
+  vec2 u = d / L, n = vec2(-u.y, u.x);
+  float hw = 0.6 * uPx;
+  float ext = hw + 1.0;     // room for the anti-aliased edge, no more (fill rate)
+  int corner = gl_VertexID;
+  bool atB = corner == 2 || corner == 3 || corner == 5;
+  float side = (corner == 1 || corner == 4 || corner == 5) ? 1.0 : -1.0;
+  float ex = atB ? L + ext : -ext;
+  vLocal = vec2(ex, side * ext);
+  vLen = L;
+  vAlpha = a;
+  vHalfW = hw;
+  gl_Position = vec4((A + u * ex + n * side * ext) / uRes * 2.0 - 1.0, 0.0, 1.0);
+}
+`;
+
+export const LINE_FS = `#version 300 es
+precision highp float;
+uniform vec3 uColour;
+uniform float uGap;       // pixels left clear around each star
+in highp vec2 vLocal;
+flat in float vLen;
+flat in float vAlpha;
+flat in float vHalfW;
+out vec4 outColour;
+void main() {
+  float edge = 1.0 - smoothstep(vHalfW - 0.4, vHalfW + 0.9, abs(vLocal.y));
+  float ends = smoothstep(uGap, uGap + 4.0, vLocal.x) * smoothstep(uGap, uGap + 4.0, vLen - vLocal.x);
+  outColour = vec4(uColour * (vAlpha * edge * ends), 1.0);
 }
 `;

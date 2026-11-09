@@ -49,7 +49,14 @@ test('formatting distances and speeds', () => {
   assert.equal(formatDistance(0.0153), '3,156 AU');
   assert.equal(formatDistance(2.64), '8.61 ly');
   assert.equal(formatDistance(264.55), '863 ly');
-  assert.equal(formatSpeed(0), '0 ly/s');
+  assert.equal(formatSpeed(0), '0 km/s');
+  // Solar System scales
+  assert.equal(formatDistance(7 / 206264.806), '7.00 AU');
+  assert.equal(formatDistance(384400 / 3.0856775814913673e13), '384,400 km');
+  assert.equal(formatDistance(0.5 / 206264.806), '0.500 AU');
+  assert.equal(formatSpeed(30 / 3.0856775814913673e13), '30.0 km/s');
+  assert.equal(formatSpeed(250000 / 3.0856775814913673e13), '250,000 km/s');
+  assert.equal(formatSpeed(3 * 149597870.7 / 3.0856775814913673e13), '3.00 AU/s');
   assert.equal(formatSpeed(3.1), '10 ly/s');
   assert.equal(formatSpeed(0.4), '1.3 ly/s');
   assert.equal(formatSpeed(0.1), '0.33 ly/s');

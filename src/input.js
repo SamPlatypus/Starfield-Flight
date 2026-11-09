@@ -7,7 +7,8 @@
 //   two fingers      pinch to change speed, twist to roll
 //   mouse            drag = joystick, wheel = speed, click = tap
 //   keyboard         WASD / arrows steer, Q E roll, Space / Shift boost, + - speed,
-//                    [ ] density, H home, M menu, C hide controls, L names
+//                    [ ] density, H home, M menu, C hide controls, L names, / search,
+//                    F favourites, K constellation lines, N constellation names
 import { clamp } from './math.js';
 
 const TAP_MS = 320, TAP_PX = 10, HOLD_MS = 420, HOLD_PX = 12;
@@ -142,9 +143,14 @@ export class Input {
     else if (k === '[') this.app.nudgeDensity(-0.05);
     else if (k === ']') this.app.nudgeDensity(0.05);
     else if (k === 'h') this.app.home();
-    else if (k === 'm' || k === 'Escape') this.app.toggleMenu();
+    else if (k === 'm') this.app.toggleMenu();
+    else if (k === 'Escape') { if (!this.app.back()) this.app.toggleMenu(); }
     else if (k === 'c') this.app.toggleCinema();
     else if (k === 'l') this.app.toggleLabels();
+    else if (k === '/') { e.preventDefault(); this.app.openSearch(); }
+    else if (k === 'f') this.app.openFavourites();
+    else if (k === 'k') this.app.toggleLines();
+    else if (k === 'n') this.app.toggleConNames();
     else return;
     this.app.wake();
   }

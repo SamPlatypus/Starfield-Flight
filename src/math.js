@@ -112,24 +112,41 @@ export const GALACTIC_CENTRE = radec(266.40499, -28.93617);
 /** Apparent magnitude of a star of absolute magnitude M seen from `d` parsecs. */
 export const apparentMag = (M, d) => M + 5 * Math.log10(Math.max(d, 1e-9)) - 5;
 
-/** Human-friendly distance from parsecs. */
+export const KM_PER_PC = 3.0856775814913673e13;
+export const KM_PER_AU = 149597870.7;
+const fmtInt = (x) => Math.round(x).toLocaleString('en-US');
+
+/** Human-friendly distance from parsecs: km near planets, AU in the Solar System, ly beyond. */
 export function formatDistance(pc) {
   const ly = pc * PC_TO_LY;
   if (ly < 0.05) {
     const au = ly * LY_TO_AU;
-    return au < 10 ? `${au.toFixed(1)} AU` : `${Math.round(au).toLocaleString('en-US')} AU`;
+    if (au < 0.01) {
+      const km = au * KM_PER_AU;
+      return km < 100 ? `${km.toFixed(1)} km` : `${fmtInt(km)} km`;
+    }
+    if (au < 1) return `${au.toFixed(3)} AU`;
+    if (au < 100) return `${au.toFixed(2)} AU`;
+    return `${fmtInt(au)} AU`;
   }
   if (ly < 10) return `${ly.toFixed(2)} ly`;
   if (ly < 100) return `${ly.toFixed(1)} ly`;
-  if (ly < 100000) return `${Math.round(ly).toLocaleString('en-US')} ly`;
+  if (ly < 100000) return `${fmtInt(ly)} ly`;
   return `${(ly / 1000).toFixed(0)}k ly`;
 }
 
-/** Speed in parsecs per second as light-years per second. */
+/** Speed in parsecs per second as km/s, AU/s or light-years per second. */
 export function formatSpeed(pcPerSec) {
   const ly = pcPerSec * PC_TO_LY;
-  if (ly < 0.0005) return '0 ly/s';
-  if (ly < 1) return `${ly.toFixed(ly < 0.1 ? 3 : 2)} ly/s`;
-  if (ly < 10) return `${ly.toFixed(1)} ly/s`;
-  return `${Math.round(ly).toLocaleString('en-US')} ly/s`;
+  if (ly >= 0.1) {
+    if (ly < 1) return `${ly.toFixed(2)} ly/s`;
+    if (ly < 10) return `${ly.toFixed(1)} ly/s`;
+    return `${fmtInt(ly)} ly/s`;
+  }
+  const km = pcPerSec * KM_PER_PC;
+  if (km < 0.05) return '0 km/s';
+  if (km < 100) return `${km.toFixed(1)} km/s`;
+  if (km < 1e6) return `${fmtInt(km)} km/s`;
+  const au = km / KM_PER_AU;
+  return au < 10 ? `${au.toFixed(2)} AU/s` : `${fmtInt(au)} AU/s`;
 }

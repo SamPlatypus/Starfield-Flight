@@ -2,7 +2,9 @@
 // End-to-end test of the production build in headless Chromium (Playwright, software GL).
 //   npm run build && node test/e2e/smoke.mjs [--shots dir]
 // Checks rendering, touch steering, pinch-to-throttle, tapping stars, the Sol marker and
-// autopilot, boost, sliders, the menu and install UI, WebGL context loss and offline start.
+// autopilot, boost, sliders, the menu and install UI, search, favourites, constellations,
+// the Solar System (planets, units, warp limiter, planet autopilot, clock), WebGL context
+// loss and offline start.
 import { createServer } from 'node:http';
 import { readFile, mkdir } from 'node:fs/promises';
 import { createRequire } from 'node:module';
@@ -190,18 +192,196 @@ await check('tapping a star selects it, shows facts and turns towards it', async
   await ctx.close();
 });
 
-await check('tapping the Sol marker flies home and parks near the Sun', async () => {
+const AU_PER_PC = 206264.80624709636;
+
+await check('tapping the Sol marker flies home and parks above the ecliptic, facing the Sun', async () => {
   const { ctx, page } = await newPage(browser);
   await app(page, () => { const a = window.starfield; a.ship.pos = [12, -30, 8]; a.ship.lookAlong([1, 0, 0]); a.setThrottle(0); });
   await page.waitForTimeout(600);
   const box = await page.locator('#sol').boundingBox();
   await page.touchscreen.tap(box.x + box.width / 2, box.y + box.height / 2);
-  assert.equal(await app(page, () => window.starfield.ship.autopilot && window.starfield.ship.target.kind), 'sol');
-  await page.waitForFunction(() => !window.starfield.ship.autopilot, null, { timeout: 40000 });
-  const d = await app(page, () => Math.hypot(...window.starfield.ship.pos));
-  assert.ok(Math.abs(d - 0.0153) < 0.002, `parked ${d} pc from the Sun`);
+  assert.equal(await app(page, () => window.starfield.ship.autopilot && window.starfield.ship.target.home), true);
+  await page.waitForFunction(() => !window.starfield.ship.autopilot, null, { timeout: 60000 });
+  await page.waitForTimeout(1500); // finishes turning to the Sun
+  const r = await app(page, () => {
+    const a = window.starfield, p = a.ship.pos, d = Math.hypot(...p), f = a.ship.forward;
+    const n = [0, -Math.sin(23.4392911 * Math.PI / 180), Math.cos(23.4392911 * Math.PI / 180)];
+    return { d, elev: Math.asin((p[0] * n[0] + p[1] * n[1] + p[2] * n[2]) / d) * 180 / Math.PI, facing: -(f[0] * p[0] + f[1] * p[1] + f[2] * p[2]) / d, s: a.solarS };
+  });
+  const au = r.d * AU_PER_PC;
+  assert.ok(Math.abs(au - 6) < 0.15, `parked ${au.toFixed(2)} AU from the Sun`);
+  assert.ok(Math.abs(r.elev - 60) < 1 && au * Math.sin(r.elev * Math.PI / 180) > 5, `elevation ${r.elev.toFixed(1)} deg`);
+  assert.ok(r.facing > 0.999, 'facing the Sun');
+  assert.equal(r.s, 1, 'in Solar System mode');
   assert.match(await page.locator('#toast').textContent(), /Home/);
+  assert.match(await page.locator('#readout .sol-dist').textContent(), /AU/);
+  assert.ok(await page.locator('#labels .label.body.on').count() >= 2, 'planets are labelled');
   await shot(page, 'home');
+  assert.deepEqual(page.errors, []);
+  await ctx.close();
+});
+
+await check('search finds stars by name and designation, and planets; the card flies there', async () => {
+  const { ctx, page } = await newPage(browser);
+  await app(page, () => window.starfield.setThrottle(0));
+  await page.click('#search-btn');
+  assert.equal(await page.locator('#search').isVisible(), true);
+  assert.equal(await app(page, () => document.activeElement === document.querySelector('#search input')), true, 'ready to type');
+  assert.ok(await page.locator('#search .result').count() >= 5, 'suggestions before typing');
+  await page.keyboard.type('alf CMa');
+  await page.waitForFunction(() => document.querySelector('#search .result b')?.textContent === 'Sirius');
+  await shot(page, 'search');
+  await page.keyboard.press('Enter');
+  assert.equal(await page.locator('#search').isVisible(), false, 'panel closes');
+  const sel = await app(page, () => ({ t: window.starfield.ship.target, title: document.querySelector('#card .title').textContent }));
+  assert.equal(sel.title, 'Sirius');
+  assert.equal(sel.t?.kind, 'star', 'turning towards it');
+  await page.click('#card .fly');
+  assert.equal(await app(page, () => window.starfield.ship.autopilot && window.starfield.ship.target.name), 'Sirius');
+  // planets, typos
+  for (const [q, want] of [['jupiter', 'Jupiter'], ['betelguese', 'Betelgeuse'], ['61 Cyg', '61 Cygni A']]) {
+    await page.click('#search-btn');
+    await page.waitForFunction(() => document.activeElement === document.querySelector('#search input'));
+    await page.keyboard.type(q);
+    await page.waitForFunction((w) => document.querySelector('#search .result b')?.textContent.startsWith(w.split(' ')[0]), want);
+    const first = await page.locator('#search .result b').first().textContent();
+    assert.ok(first === want || first.startsWith(want.split(' ')[0]), `"${q}" -> ${first}`);
+    await page.keyboard.press('Escape');
+  }
+  assert.deepEqual(page.errors, []);
+  await ctx.close();
+});
+
+await check('favourites: save from the card, list with live distances, rename, fly, remove, persist', async () => {
+  const { ctx, page } = await newPage(browser);
+  await app(page, () => { const a = window.starfield; a.setThrottle(0); a.select(a.search.query('Vega', 1)[0].entry.target); });
+  await page.click('#card .fav');
+  assert.match(await page.locator('#card .fav').textContent(), /Saved/);
+  await app(page, () => window.starfield.select({ kind: 'body', id: 'saturn' }));
+  await page.click('#card .fav');
+  await page.click('#menu-btn');
+  await page.click('#sheet [data-action=favourites]');
+  assert.equal(await page.locator('#favourites').isVisible(), true);
+  assert.equal(await page.locator('#favourites .fav-row').count(), 2);
+  await page.waitForFunction(() => /ly/.test(document.querySelector('#favourites .fav-row .dist')?.textContent || ''));
+  assert.match(await page.locator('#favourites .count').textContent(), /2 \/ 100/);
+  await shot(page, 'favourites');
+  // rename Vega
+  await page.locator('#favourites .fav-row').first().locator('.rename').click();
+  await page.locator('#favourites .rename-input').fill('Harp star');
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(() => document.querySelector('#favourites .fav-row b')?.textContent === 'Harp star');
+  // persisted
+  await page.reload();
+  await page.waitForFunction(() => window.starfield?.running && window.starfield.lastFrame);
+  const saved = await app(page, () => window.starfield.favourites.items.map((it) => it.name));
+  assert.deepEqual(saved, ['Harp star', 'Saturn']);
+  // one tap flies there
+  await app(page, () => window.starfield.openFavourites());
+  await page.locator('#favourites .fav-row .go').first().click();
+  assert.equal(await page.locator('#favourites').isVisible(), false);
+  assert.equal(await app(page, () => window.starfield.ship.autopilot && window.starfield.ship.target.name), 'Vega');
+  // remove
+  await app(page, () => window.starfield.openFavourites());
+  await page.locator('#favourites .fav-row').last().locator('.remove').click();
+  assert.equal(await page.locator('#favourites .fav-row').count(), 1);
+  assert.deepEqual(page.errors, []);
+  await ctx.close();
+});
+
+await check('constellation lines draw subtly and toggle; names show when enabled', async () => {
+  const { ctx, page } = await newPage(browser, { settings: { hintSeen: true, milkyWay: 0 } });
+  // From near the Sun looking at Orion, standing still.
+  await app(page, () => { const a = window.starfield; a.ship.pos = [0.0001, 0, 0]; a.ship.cancelTarget(); a.ship.speed = 0; a.setThrottle(0); a.ship.lookAlong([0.1, 0.99, -0.05]); });
+  await page.waitForTimeout(1200);
+  const on = await canvasStats(page);
+  await page.click('#menu-btn');
+  await page.click('#set-lines');
+  await page.click('#set-connames');
+  await page.click('#sheet .close');
+  await page.waitForTimeout(1500);
+  const off = await canvasStats(page);
+  assert.ok(on.mean > off.mean * 1.01, `lines add light: ${on.mean.toFixed(2)} vs ${off.mean.toFixed(2)} without`);
+  assert.ok(on.mean < off.mean * 1.6, 'but stay subtle');
+  const names = await page.locator('#labels .label.con.on').allTextContents();
+  assert.ok(names.length >= 3 && names.includes('Ori'), `constellation names: ${names.join(' ')}`);
+  await shot(page, 'constellations');
+  assert.deepEqual(page.errors, []);
+  await ctx.close();
+});
+
+await check('the Solar System: planets render with names, sizes and AU / km units; tap one for its card', async () => {
+  const { ctx, page } = await newPage(browser);
+  // 9 Saturn radii out on the sunward side, looking at Saturn
+  await app(page, () => {
+    const a = window.starfield, s = a.solar.get('saturn'), r = Math.hypot(...s.pos), R = 60268 / 149597870.7;
+    const p = s.pos.map((x) => x * (1 - 9 * R / r));
+    p[2] += 3 * R;
+    a.ship.cancelTarget(); a.ship.speed = 0; a.setThrottle(0);
+    a.ship.pos = p.map((x) => x / 206264.80624709636);
+    a.ship.lookAlong([s.pos[0] - p[0], s.pos[1] - p[1], s.pos[2] - p[2]]);
+  });
+  await page.waitForTimeout(1200);
+  const v = await app(page, () => {
+    const a = window.starfield, sat = a.solarView.screen.find((x) => x.body.id === 'saturn');
+    return { s: a.solarS, frame: a.frameBody?.id, r: sat.r, x: sat.x, y: sat.y, bodies: a.renderer.solar ? 1 : 0 };
+  });
+  assert.equal(v.s, 1);
+  assert.equal(v.frame, 'saturn', 'moving with Saturn');
+  assert.ok(v.r > 20 && v.r < 60, `Saturn's disc is ${v.r.toFixed(1)} px`);
+  const s = await canvasStats(page);
+  assert.ok(s.mean > 8, `a lit planet fills part of the view (mean ${s.mean.toFixed(1)})`);
+  assert.match(await page.locator('#readout .sol-dist').textContent(), /AU/);
+  assert.match(await page.locator('#readout .clock').textContent(), /\d{4}-\d\d-\d\d \d\d:\d\d UTC/);
+  await app(page, () => window.starfield.setThrottle(0.6));
+  await page.waitForTimeout(1500);
+  assert.match(await page.locator('#readout .value').textContent(), /km\/s|AU\/s/, 'speed in km/s or AU/s near planets');
+  await app(page, () => window.starfield.setThrottle(0));
+  await page.touchscreen.tap(v.x, v.y);
+  await page.waitForTimeout(200);
+  assert.equal(await page.locator('#card .title').textContent(), 'Saturn');
+  assert.match(await page.locator('#card .facts').textContent(), /From you[\s\S]*km[\s\S]*Radius[\s\S]*58,232 km/);
+  await shot(page, 'saturn');
+  assert.deepEqual(page.errors, []);
+  await ctx.close();
+});
+
+await check('flying at warp towards the Sun drops out of warp in the Solar System', async () => {
+  const { ctx, page } = await newPage(browser);
+  await app(page, () => { const a = window.starfield; a.ship.cancelTarget(); a.ship.pos = [2, 0.0003, 0]; a.ship.lookAlong([-1, 0, 0]); a.setThrottle(1); a.ship.speed = 60; });
+  await page.waitForFunction(() => window.starfield.solarS > 0.99, null, { timeout: 20000 });
+  const r = await app(page, () => { const a = window.starfield; return { x: a.ship.pos[0], d: Math.hypot(...a.ship.pos), v: a.ship.speed }; });
+  assert.ok(r.x > 0, 'still on the near side of the Sun');
+  assert.ok(r.v < 0.05, `slowed to ${r.v.toFixed(4)} pc/s`);
+  assert.deepEqual(page.errors, []);
+  await ctx.close();
+});
+
+await check('the autopilot flies from the stars to Jupiter, parks, and stays with it as time runs fast', async () => {
+  const { ctx, page } = await newPage(browser);
+  await app(page, () => window.starfield.flyToTarget({ kind: 'body', id: 'jupiter' }));
+  assert.equal(await app(page, () => window.starfield.ship.autopilot && window.starfield.ship.target.kind), 'body');
+  await page.waitForFunction(() => !window.starfield.ship.autopilot, null, { timeout: 60000 });
+  const dist = () => app(page, () => {
+    const a = window.starfield, j = a.solar.get('jupiter'), p = a.ship.pos.map((x) => x * 206264.80624709636);
+    return Math.hypot(p[0] - j.pos[0], p[1] - j.pos[1], p[2] - j.pos[2]) / j.Req;
+  });
+  const d0 = await dist();
+  assert.ok(Math.abs(d0 / 4.5 - 1) < 0.03, `parked ${d0.toFixed(2)} Jupiter radii out`);
+  assert.match(await page.locator('#toast').textContent(), /Arrived: Jupiter/);
+  // a month per second: Jupiter moves ~0.3 AU/s, the ship moves with it
+  const jd0 = await app(page, () => window.starfield.solar.jdUT);
+  await app(page, () => window.starfield.setTimeRate(2629800));
+  await page.waitForTimeout(1500);
+  const jd1 = await app(page, () => window.starfield.solar.jdUT);
+  assert.ok(jd1 - jd0 > 20, `the clock ran ${(jd1 - jd0).toFixed(0)} days`);
+  const d1 = await dist();
+  assert.ok(Math.abs(d1 / d0 - 1) < 0.01, `still ${d1.toFixed(2)} radii from Jupiter`);
+  await shot(page, 'jupiter');
+  await app(page, () => window.starfield.timeNow());
+  await page.waitForTimeout(400); // the next frame moves the planets
+  const jd2 = await app(page, () => window.starfield.solar.jdUT);
+  assert.ok(Math.abs(jd2 - (Date.now() / 86400000 + 2440587.5)) < 0.01, 'back to now');
   assert.deepEqual(page.errors, []);
   await ctx.close();
 });
