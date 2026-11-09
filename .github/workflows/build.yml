@@ -157,9 +157,14 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          if gh api "repos/${{ github.repository }}/pages" --jq .build_type > build_type.txt 2>/dev/null; then
-            echo "enabled=true" >> "$GITHUB_OUTPUT"
-            echo "Pages build type: $(cat build_type.txt)"
+          if build_type=$(gh api "repos/${{ github.repository }}/pages" --jq .build_type 2>/dev/null); then
+            echo "Pages build type: $build_type"
+            if [ "$build_type" = "workflow" ]; then
+              echo "enabled=true" >> "$GITHUB_OUTPUT"
+            else
+              echo "enabled=false" >> "$GITHUB_OUTPUT"
+              echo "::notice title=GitHub Pages source::Pages deploys from a branch. Set Settings -> Pages -> Source to GitHub Actions to publish the installable web app."
+            fi
           else
             echo "enabled=false" >> "$GITHUB_OUTPUT"
             echo "::notice title=GitHub Pages is off::Enable Settings -> Pages -> Source: GitHub Actions to publish the installable web app."
