@@ -1,0 +1,32 @@
+{
+  "name": "starfield-flight",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Warp-speed flight through 626,000 real stars in 3D (Yale Bright Star Catalogue, Gaia, Hipparcos). Offline PWA and Android app.",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build && node tools/build-sw.mjs",
+    "preview": "vite preview --port 4173",
+    "test": "node --test test/*.test.mjs",
+    "test:e2e": "node test/e2e/smoke.mjs",
+    "build:data": "node tools/build-stars.mjs",
+    "build:icons": "node tools/make-icons.mjs",
+    "android:sync": "npm run build && cap sync android",
+    "android:apk": "npm run android:sync && cd android && ./gradlew assembleRelease"
+  },
+  "dependencies": {
+    "@capacitor/android": "8.6.0",
+    "@capacitor/app": "8.1.2",
+    "@capacitor/core": "8.6.0",
+    "@capacitor/haptics": "8.0.2"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "8.6.0",
+    "playwright": "1.63.0",
+    "vite": "8.3.5"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

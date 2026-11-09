@@ -1,0 +1,6 @@
+node_modules/
+dist/
+tools/raw/
+*.log
+.DS_Store
+e2e-screenshots/

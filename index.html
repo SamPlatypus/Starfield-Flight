@@ -1,0 +1,151 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover">
+  <!-- Offline by design: connect-src 'self' forbids any network request to other origins.
+       Inline scripts are allowed only because Capacitor injects its bridge inline on old WebViews. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'; worker-src 'self'; manifest-src 'self'">
+  <meta name="theme-color" content="#000000">
+  <meta name="color-scheme" content="dark">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="description" content="Fly at warp speed through 626,000 real stars in 3D: Yale Bright Star Catalogue, Hipparcos and Gaia distances. Works fully offline.">
+  <title>Starfield Flight</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/apple-touch-icon.png">
+</head>
+<body>
+  <canvas id="sky" aria-label="Starfield"></canvas>
+
+  <div id="hud" class="idle">
+    <!-- Joystick feedback while dragging -->
+    <div id="stick" aria-hidden="true"><div class="knob"></div></div>
+
+    <!-- Named star labels (pool, positioned every frame) -->
+    <div id="labels" aria-hidden="true"></div>
+
+    <!-- Direction marker towards Sol -->
+    <button id="sol" class="marker" type="button" aria-label="Sol direction marker: tap to fly home">
+      <svg class="reticle" viewBox="-20 -20 40 40" aria-hidden="true">
+        <circle r="8.5" />
+        <path d="M0-15v5M0 10v5M-15 0h5M10 0h5" />
+      </svg>
+      <svg class="arrow" viewBox="-20 -20 40 40" aria-hidden="true">
+        <path d="M-7-9L9 0-7 9-3 0z" />
+      </svg>
+      <span class="tag"><b>SOL</b> <span class="dist"></span></span>
+    </button>
+
+    <!-- Selected star -->
+    <div id="target" class="marker" aria-hidden="true">
+      <svg class="reticle" viewBox="-20 -20 40 40"><path d="M-12-6v-6h6M6-12h6v6M12 6v6H6M-6 12h-6V6" /></svg>
+      <svg class="arrow" viewBox="-20 -20 40 40"><path d="M-7-9L9 0-7 9-3 0z" /></svg>
+      <span class="tag"><b class="name"></b> <span class="dist"></span></span>
+    </div>
+
+    <!-- Readouts -->
+    <div id="readout" class="chrome">
+      <div class="speed"><span class="value">0</span></div>
+      <div class="sub"><span class="sol-dist"></span><span class="mode"></span></div>
+    </div>
+
+    <button id="menu-btn" class="chrome round" type="button" aria-label="Menu">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>
+    </button>
+
+    <div id="install-pill" class="chrome" hidden>
+      <button type="button" class="go">Install app</button>
+      <button type="button" class="x" aria-label="Dismiss">×</button>
+    </div>
+
+    <!-- Throttle (left) and density (right) -->
+    <div id="speed-slider" class="slider chrome" role="slider" tabindex="0" aria-label="Speed" aria-valuemin="0" aria-valuemax="100">
+      <div class="cap">Speed</div>
+      <div class="track"><div class="fill"></div><div class="thumb"></div></div>
+    </div>
+    <div id="density-slider" class="slider chrome" role="slider" tabindex="0" aria-label="Star density" aria-valuemin="0" aria-valuemax="100">
+      <div class="cap">Density</div>
+      <div class="track"><div class="fill"></div><div class="thumb"></div></div>
+      <div class="val"></div>
+    </div>
+
+    <button id="boost" class="chrome" type="button" aria-label="Boost (hold)">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2L4 14h7l-1 8 9-12h-7z"/></svg>
+      <span>BOOST</span>
+    </button>
+
+    <div id="toast" role="status" aria-live="polite"></div>
+    <div id="hint" hidden>
+      <p><b>Drag</b> to steer · <b>Tap</b> a star to turn to it</p>
+      <p><b>Hold</b> anywhere or ⚡ to boost · <b>Pinch</b> to change speed</p>
+      <p>The <b>SOL</b> marker always points home — tap it to fly back</p>
+    </div>
+  </div>
+
+  <!-- Star info card -->
+  <div id="card" class="sheetish" hidden>
+    <button type="button" class="close" aria-label="Close">×</button>
+    <h2 class="title"></h2>
+    <p class="subtitle"></p>
+    <dl class="facts"></dl>
+    <div class="actions"><button type="button" class="fly primary">Fly here</button></div>
+  </div>
+
+  <!-- Menu -->
+  <div id="sheet" class="sheetish" hidden>
+    <div class="sheet-head">
+      <h2>Starfield Flight</h2>
+      <button type="button" class="close" aria-label="Close menu">×</button>
+    </div>
+    <div class="actions grid">
+      <button type="button" data-action="home" class="primary">Fly home to Sol</button>
+      <button type="button" data-action="jump">Jump to a random star</button>
+      <button type="button" data-action="stop">All stop</button>
+      <button type="button" data-action="cinema">Hide controls</button>
+    </div>
+
+    <section id="install-section" hidden>
+      <h3>Install</h3>
+      <p class="note" id="install-note"></p>
+      <div class="actions grid">
+        <button type="button" id="install-app" class="primary">Install app</button>
+        <a id="apk-link" class="button" href="https://github.com/SamPlatypus/Starfield-Flight/releases/latest/download/starfield-flight.apk" rel="noopener">Download Android APK</a>
+      </div>
+    </section>
+
+    <h3>View</h3>
+    <label class="row">Motion blur <input type="range" id="set-blur" min="0" max="1" step="0.01"></label>
+    <label class="row">Milky Way <input type="range" id="set-milkyway" min="0" max="1" step="0.01"></label>
+    <label class="row">Field of view <input type="range" id="set-fov" min="40" max="100" step="1"></label>
+    <label class="row">Star brightness <input type="range" id="set-gain" min="0.4" max="2" step="0.01"></label>
+    <label class="row check">Star names <input type="checkbox" id="set-labels"></label>
+    <label class="row check">Keep galactic plane level <input type="checkbox" id="set-level"></label>
+    <label class="row check">Invert pitch <input type="checkbox" id="set-invert"></label>
+    <label class="row check">Haptics <input type="checkbox" id="set-haptics"></label>
+    <label class="row check">Performance overlay <input type="checkbox" id="set-stats"></label>
+
+    <h3>About</h3>
+    <p class="note">Every point is a real star at its catalogued 3D position: the <b>Yale Bright Star Catalogue</b>
+      (names, colours, brightness of 8,401 naked-eye stars) with distances from <b>Gaia DR3</b> and
+      <b>Hipparcos</b> via AT-HYG, plus the <b>Gaia Catalogue of Nearby Stars</b> for the faint neighbours
+      within 326 light-years. Brightness follows the inverse-square law from wherever you are.
+      Milky Way glow: NASA/Goddard SVS Deep Star Maps 2020 (Gaia DR2: ESA/Gaia/DPAC).</p>
+    <p class="note" id="about-stats"></p>
+    <p class="note version" id="about-version"></p>
+  </div>
+
+  <div id="stats" hidden></div>
+
+  <div id="loading">
+    <div class="title">STARFIELD FLIGHT</div>
+    <div class="bar"><div class="fill"></div></div>
+    <div class="msg">Loading 626,000 stars…</div>
+  </div>
+  <div id="fatal" hidden></div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
