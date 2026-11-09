@@ -145,7 +145,9 @@ button { cursor: pointer; }
 #toast.on { opacity: 1; }
 
 #hint {
-  position: absolute; left: 50%; bottom: calc(var(--sab) + 120px); transform: translateX(-50%); width: min(92vw, 420px);
+  /* first-run help: in the open sky below the readout, clear of the sliders and the boost button */
+  position: absolute; left: 50%; top: calc(var(--sat) + 78px); transform: translateX(-50%); width: min(86vw, 400px);
+  padding: 8px 14px; border-radius: 14px; background: rgba(8, 12, 22, 0.55); border: 1px solid var(--line);
   text-align: center; font-size: 13px; color: var(--fg); text-shadow: 0 0 6px #000; transition: opacity 0.8s;
 }
 #hint p { margin: 6px 0; }
