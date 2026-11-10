@@ -3,7 +3,9 @@
 // Stars are drawn without vertex attributes: gl_VertexID / 6 is the star index, which
 // selects one RGBA32F texel (position in parsecs + packed colour/absolute magnitude), and
 // gl_VertexID % 6 picks a corner of the star's quad. That makes any contiguous star range
-// a single drawArrays call, which is what the octree culling produces.
+// a single drawArrays call, which is what the octree culling produces. It relies on
+// gl_VertexID starting at the draw's `first`; on GPUs where it starts at 0 instead, the
+// renderer passes the range start in uBase (see probeDrawOffsets in renderer.js).
 //
 // Each star is a camera-facing capsule from where it was `tau` seconds ago (tail) to where
 // it is now (head): real motion blur at short exposures, warp streaks at long ones. Its
@@ -30,6 +32,7 @@ uniform float uGain;      // overall brightness
 uniform float uSpread;    // how strongly a streak spreads its light (1 = photometric)
 uniform int uHideIndex;   // Sol, handed over to the Solar System renderer near home
 uniform float uHideScale; // 1 = drawn normally, 0 = hidden
+uniform int uBase;        // first star of the range, on GPUs that number every draw's vertices from 0 (else 0)
 
 out highp vec2 vLocal;    // pixels: x along the streak from the tail, y across
 flat out float vLen;
@@ -47,8 +50,9 @@ vec2 toPixels(vec3 p) {
 }
 
 void main() {
-  int star = gl_VertexID / 6;
-  int corner = gl_VertexID - star * 6;
+  int quad = gl_VertexID / 6;
+  int corner = gl_VertexID - quad * 6;
+  int star = quad + uBase;
   vec4 t = texelFetch(uStars, ivec2(star & 2047, star >> 11), 0);
   vec3 rel = (t.xyz - uCamHi) - uCamLo;
   float d = max(length(rel), 1e-7);

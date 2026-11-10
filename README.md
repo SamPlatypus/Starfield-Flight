@@ -121,6 +121,9 @@ the faintest red dwarfs.
 - **No vertex buffers.** The catalogue lives in one RGBA32F texture (position in parsecs plus
   packed colour and absolute magnitude); `gl_VertexID / 6` picks a star and `% 6` a corner of its
   quad, so any contiguous range of stars is one draw call (`WEBGL_multi_draw` when available).
+  Some mobile GPUs start `gl_VertexID` at 0 whatever the draw's offset, which would redraw the
+  first few hundred stars of the catalogue for every range; a one-pixel probe at start-up detects
+  that and switches to passing each range's start in a uniform instead.
 - **Magnitude-band octrees.** Stars are grouped into 1-magnitude bands of absolute magnitude, each
   with its own octree. A band is only searched within the distance where its brightest member
   can still be seen (`10^((m_lim − M + 5)/5)` pc), so faint red dwarfs come from the few nodes
@@ -153,7 +156,9 @@ npm run test:e2e     # headless Chromium: rendering, touch controls, search, fav
 ```
 
 Append `?stats` to the URL (or enable *Performance overlay* in the menu) to see frame rate, stars
-submitted and draw calls; `?fixed` pins the render quality.
+submitted, draw calls and the star draw path in use (`multi-draw`, `draw-loop` or `base-uniform`,
+plus a line when the GPU ignores draw offsets); `?fixed` pins the render quality and
+`?stardraw=multi|loop|base` forces a draw path.
 
 ### Android
 

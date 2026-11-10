@@ -54,10 +54,12 @@ export class App {
     this.ship.level = this.settings.level;
     this.ship.throttle = this.settings.throttle;
     this.perf = new PerfGovernor();
-    // ?fixed pins quality (automated screenshots on software GL); ?stats shows the overlay.
+    // ?fixed pins quality (automated screenshots on software GL); ?stats shows the overlay;
+    // ?stardraw=multi|loop|base forces a star draw path (see Renderer.chooseStarDraw).
     const q = new URLSearchParams(location.search);
     this.perf.locked = q.has('fixed');
     if (q.has('stats')) this.settings.stats = true;
+    this.starDrawOverride = q.get('stardraw');
     this.proj = new Projector();
     this.steerSources = { touch: [0, 0], key: [0, 0] };
     this.boostSources = new Set();
@@ -99,7 +101,7 @@ export class App {
     this.solarView = new SolarView(this.solar);
     this.search = new SearchIndex(searchData, this.catalog, this.solar.bodies);
     this.favourites = new Favourites(this.catalog);
-    this.renderer = new Renderer(this.canvas, this.catalog, sky, this.constellations.pairs);
+    this.renderer = new Renderer(this.canvas, this.catalog, sky, this.constellations.pairs, { starDraw: this.starDrawOverride });
     this.culler = new Culler(this.catalog);
 
     this.hud = new Hud(this);
@@ -303,8 +305,13 @@ export class App {
       `${this.perf.fps.toFixed(0)} fps (${this.perf.refresh} Hz)  scale ${this.perf.scale.toFixed(2)}`,
       `${this.renderer.canvas.width}×${this.renderer.canvas.height}  mag ≤ ${magLimit.toFixed(2)}`,
       `stars submitted ${culler.starsSubmitted.toLocaleString('en-US')} / ${this.catalog.count.toLocaleString('en-US')}`,
-      `draws ${culler.rangeCount}  nodes ${culler.nodesVisited}${this.renderer.multiDraw ? '  multi-draw' : ''}`,
+      `draws ${culler.rangeCount}  nodes ${culler.nodesVisited}  ${this.renderer.starDraw.label}`,
     ];
+    const sd = this.renderer.starDraw;
+    if (sd.fault) {
+      const state = (ok) => (ok ? 'ok' : 'no');
+      lines.push(`gpu ignores draw offsets: multi ${this.renderer.multiDraw ? state(sd.probe.multi) : 'absent'}, loop ${state(sd.probe.loop)}`);
+    }
     if (solarFrame) {
       lines.push(`solar ${(this.solarS * 100).toFixed(0)}%  bodies ${solarFrame.bodies.length}  orbits ${solarFrame.orbits.length}` +
         `${this.frameBody ? `  moving with ${this.frameBody.name}` : ''}`);

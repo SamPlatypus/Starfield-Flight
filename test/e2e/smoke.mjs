@@ -1,10 +1,10 @@
 #!/usr/bin/env node
 // End-to-end test of the production build in headless Chromium (Playwright, software GL).
 //   npm run build && node test/e2e/smoke.mjs [--shots dir]
-// Checks rendering, touch steering, pinch-to-throttle, tapping stars, the Sol marker and
-// autopilot, boost, sliders, the menu and install UI, search, favourites, constellations,
-// the Solar System (planets, units, warp limiter, planet autopilot, clock), WebGL context
-// loss and offline start.
+// Checks rendering, the star draw paths (and a GPU that ignores draw offsets), touch steering,
+// pinch-to-throttle, tapping stars, the Sol marker and autopilot, boost, sliders, the menu and
+// install UI, search, favourites, constellations, the Solar System (planets, units, warp
+// limiter, planet autopilot, clock), WebGL context loss and offline start.
 import { createServer } from 'node:http';
 import { readFile, mkdir } from 'node:fs/promises';
 import { createRequire } from 'node:module';
@@ -43,11 +43,12 @@ async function check(name, fn) {
   catch (err) { results.push(['FAIL', name]); console.log(`not ok - ${name}\n  ${String(err.stack || err).split('\n').slice(0, 5).join('\n  ')}`); }
 }
 
-async function newPage(browser, { query = '?fixed', settings = { hintSeen: true }, viewport = { width: 412, height: 860 } } = {}) {
+async function newPage(browser, { query = '?fixed', settings = { hintSeen: true }, viewport = { width: 412, height: 860 }, init = null } = {}) {
   const ctx = await browser.newContext({ viewport, deviceScaleFactor: 1, isMobile: true, hasTouch: true, serviceWorkers: 'allow' });
   await ctx.addInitScript((s) => {
     if (!localStorage.getItem('starfield-flight.settings.v1')) localStorage.setItem('starfield-flight.settings.v1', JSON.stringify(s));
   }, settings);
+  if (init) await ctx.addInitScript(init);
   const page = await ctx.newPage();
   page.errors = [];
   page.on('pageerror', (e) => page.errors.push(e.message));
@@ -75,6 +76,55 @@ const canvasStats = (page) => page.evaluate(() => new Promise((resolve) => reque
   }
   resolve({ mean: sum / (d.length / 4), bright });
 })));
+
+/** Mean luminance of the WebGL canvas in a coarse grid, read right after a frame is drawn. */
+const canvasGrid = (page, nx = 12, ny = 24) => page.evaluate(([nx, ny]) => new Promise((resolve) => requestAnimationFrame(() => {
+  const src = document.getElementById('sky');
+  const c = document.createElement('canvas');
+  c.width = src.width; c.height = src.height;
+  const g = c.getContext('2d');
+  g.drawImage(src, 0, 0);
+  const d = g.getImageData(0, 0, c.width, c.height).data;
+  const sum = new Float64Array(nx * ny), n = new Float64Array(nx * ny);
+  for (let y = 0; y < c.height; y++) {
+    for (let x = 0; x < c.width; x++) {
+      const i = (y * c.width + x) * 4, k = Math.floor(y * ny / c.height) * nx + Math.floor(x * nx / c.width);
+      sum[k] += 0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2];
+      n[k]++;
+    }
+  }
+  resolve(Array.from(sum, (v, k) => v / n[k]));
+})), [nx, ny]);
+const gridDiff = (a, b) => a.reduce((m, v, k) => Math.max(m, Math.abs(v - b[k])), 0);
+
+/** Parks the ship outside the Solar System facing Orion: a still, time-independent sky. */
+const stillSky = async (page) => {
+  await app(page, () => {
+    const a = window.starfield, D = Math.PI / 180;
+    const f = [Math.cos(-1.2 * D) * Math.cos(83.8 * D), Math.cos(-1.2 * D) * Math.sin(83.8 * D), Math.sin(-1.2 * D)];
+    a.ship.cancelTarget(); a.setThrottle(0); a.ship.speed = 0;
+    a.ship.pos = f.map((x) => x * 0.3);
+    a.ship.lookAlong(f);
+  });
+  await page.waitForTimeout(500);
+  return { grid: await canvasGrid(page), draw: await app(page, () => ({ ...window.starfield.renderer.starDraw, hasMulti: !!window.starfield.renderer.multiDraw })) };
+};
+
+/** Emulates a GPU driver that numbers every draw's vertices from 0, ignoring the draw's offset. */
+const IGNORE_DRAW_OFFSETS = () => {
+  const P = WebGL2RenderingContext.prototype;
+  const drawArrays = P.drawArrays;
+  P.drawArrays = function (mode, first, count) { return drawArrays.call(this, mode, 0, count); };
+  const getExtension = P.getExtension;
+  P.getExtension = function (name) {
+    const ext = getExtension.call(this, name);
+    if (name !== 'WEBGL_multi_draw' || !ext || ext.patched) return ext;
+    const real = ext.multiDrawArraysWEBGL.bind(ext);
+    ext.multiDrawArraysWEBGL = (mode, firsts, fo, counts, co, n) => real(mode, new Int32Array(firsts.length), fo, counts, co, n);
+    ext.patched = true;
+    return ext;
+  };
+};
 
 async function touchDrag(page, from, to, steps = 12, holdMs = 400) {
   const cdp = await page.context().newCDPSession(page);
@@ -117,6 +167,51 @@ await check('boots without errors and renders a starfield with the Milky Way', a
   await shot(page, 'boot');
   assert.deepEqual(page.errors, []);
   await ctx.close();
+});
+
+await check('star draw paths: the offset probe passes here and all three paths draw the same sky', async () => {
+  const sky = {};
+  for (const mode of ['auto', 'multi', 'loop', 'base']) {
+    const { ctx, page } = await newPage(browser, { query: mode === 'auto' ? '?fixed' : `?fixed&stardraw=${mode}` });
+    sky[mode] = await stillSky(page);
+    assert.deepEqual(page.errors, []);
+    await ctx.close();
+  }
+  const auto = sky.auto.draw;
+  assert.equal(auto.fault, false, 'no draw-offset fault on this GPU');
+  assert.equal(auto.probe.loop, true, 'drawArrays honours its offset');
+  assert.equal(auto.mode, auto.hasMulti ? 'multi' : 'loop', `fastest path chosen: ${auto.mode}`);
+  for (const mode of ['multi', 'loop', 'base']) {
+    if (mode === 'multi' && !auto.hasMulti) continue;
+    assert.equal(sky[mode].draw.mode, mode, `?stardraw=${mode} forces the ${mode} path`);
+    const d = gridDiff(sky.auto.grid, sky[mode].grid);
+    assert.ok(d < 0.5, `the ${mode} path draws the same sky (max block difference ${d.toFixed(2)})`);
+  }
+});
+
+await check('a GPU that ignores draw offsets is detected and still shows the right stars', async () => {
+  const healthy = await newPage(browser);
+  const want = await stillSky(healthy.page);
+  await healthy.ctx.close();
+
+  const fixed = await newPage(browser, { query: '?fixed&stats', init: IGNORE_DRAW_OFFSETS });
+  const got = await stillSky(fixed.page);
+  assert.equal(got.draw.fault, true, 'fault detected');
+  assert.equal(got.draw.probe.loop, false, 'probe saw drawArrays ignore its offset');
+  assert.equal(got.draw.mode, 'base', 'range starts passed as a uniform');
+  const d = gridDiff(want.grid, got.grid);
+  assert.ok(d < 0.5, `same sky as a healthy GPU (max block difference ${d.toFixed(2)})`);
+  await fixed.page.waitForTimeout(250);
+  assert.match(await fixed.page.locator('#stats').textContent(), /base-uniform\s+gpu ignores draw offsets/);
+  await shot(fixed.page, 'draw-offset-fault-fixed');
+  await fixed.ctx.close();
+
+  // Without the workaround the same GPU stacks the catalogue's first stars into bright squares.
+  const broken = await newPage(browser, { query: `?fixed&stardraw=${got.draw.hasMulti ? 'multi' : 'loop'}`, init: IGNORE_DRAW_OFFSETS });
+  const bad = await stillSky(broken.page);
+  assert.ok(gridDiff(want.grid, bad.grid) > 5, `the emulated fault is visible without the workaround (${gridDiff(want.grid, bad.grid).toFixed(1)})`);
+  await shot(broken.page, 'draw-offset-fault-unfixed');
+  await broken.ctx.close();
 });
 
 await check('the Sol marker points home, on screen and from behind', async () => {
