@@ -36,6 +36,7 @@ const DEFAULT_THROTTLE = 0.68;
 const CLOCK_MIN = julianDay(Date.UTC(1000, 0, 1));
 const CLOCK_MAX = julianDay(Date.UTC(3000, 0, 1));
 const NEIGHBOURHOOD_PC = NEIGHBOURHOOD_AU / AU_PER_PC;
+const MAG_CAP_RATE = 1;                     // mag/s: how fast a change of the governor's star-depth cap shows
 
 function loadImage(url) {
   return new Promise((resolve, reject) => {
@@ -81,6 +82,7 @@ export class App {
     this.rollRateInput = 0;
     this.transition = new SolarTransition(); // the interstellar <-> Solar System hand-off, updated every frame
     this.shipAt = [NaN, NaN, NaN];           // where the last frame left the ship
+    this.magCap = this.perf.magCap;          // the governor's star-depth cap, eased
     this.solarS = 0;                         // its `fade`, kept at hand
     this.timeOffsetDays = 0;    // simulated minus real time
     this.timeRate = 1;          // simulated seconds per second
@@ -265,9 +267,15 @@ export class App {
       this.camHi[k] = ship.pos[k];
       this.camLo[k] = ship.pos[k] - this.camHi[k];
     }
-    // In the Solar System the starfield steps back to roughly naked-eye depth so planets read.
-    const userMag = Math.min(densityToMag(s.density), this.perf.magCap);
-    const magLimit = sS > 0 ? userMag + (Math.min(userMag, 6.2) - userMag) * 0.75 * sS : userMag;
+    // Among the planets the starfield steps back towards naked-eye depth so they read. It
+    // does so as they resolve (transition.sky), a little at a time, so faint stars fade out
+    // one by one; a cut by the frame-rate governor is eased in the same way. The limit never
+    // rises above the density setting, so no more stars are drawn than in open space.
+    const capStep = MAG_CAP_RATE * dt;
+    this.magCap += clamp(this.perf.magCap - this.magCap, -capStep, capStep);
+    const userMag = Math.min(densityToMag(s.density), this.magCap);
+    const sky = tr.sky;
+    const magLimit = userMag + (Math.min(userMag, 6.2) - userMag) * 0.75 * sky;
 
     // Cull.
     const omega = Math.hypot(ship.omega[0], ship.omega[1], ship.omega[2]);
@@ -290,7 +298,7 @@ export class App {
     }
 
     // Render.
-    const skyExposure = 0.85 * s.milkyWay ** 2 * 10 ** (0.2 * (magLimit - 7.5)) * (1 - 0.3 * sS);
+    const skyExposure = 0.85 * s.milkyWay ** 2 * 10 ** (0.2 * (magLimit - 7.5)) * (1 - 0.3 * sky);
     const linesOn = s.lines ? 1 : 0;
     this.lineFade = this.lineFade === undefined ? linesOn : this.lineFade + (linesOn - this.lineFade) * Math.min(1, dt * 4);
     this.renderer.render({
@@ -334,7 +342,8 @@ export class App {
         `${this.frameBody ? `  moving with ${this.frameBody.name}` : ''}`);
     }
     const tr = this.transition;
-    lines.push(`${tr.state}${tr.host ? ` ${tr.host.name}` : ''}  system ${(tr.system * 100).toFixed(0)}%  level ${(tr.level * 100).toFixed(0)}%`);
+    const pct = (x) => `${(x * 100).toFixed(0)}%`;
+    lines.push(`${tr.state}${tr.host ? ` ${tr.host.name}` : ''}  system ${pct(tr.system)}  sky ${pct(tr.sky)}  level ${pct(tr.level)}`);
     el.textContent = lines.join('\n');
   }
 

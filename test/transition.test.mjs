@@ -2,7 +2,7 @@
 // (with hysteresis) and the easing of the view's level.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { SolarTransition, logRamp, SYSTEM_FAR_AU, SYSTEM_NEAR_AU, VOLUME_AU, NEIGHBOURHOOD_AU, LEAVE, LEVEL_RATE } from '../src/solar/transition.js';
+import { SolarTransition, logRamp, SYSTEM_FAR_AU, SYSTEM_NEAR_AU, VOLUME_AU, NEIGHBOURHOOD_AU, LEAVE, LEVEL_RATE, SKY_RATE } from '../src/solar/transition.js';
 import { SolarSystem, AU_PER_PC, SOLAR_INNER_PC } from '../src/solar/system.js';
 
 const pc = (au) => au / AU_PER_PC;
@@ -124,6 +124,33 @@ test('the level eases at a bounded rate, and the autopilot levels for its destin
   // released, it returns to where the ship actually is
   for (let s = 0; s < 5; s += DT) away.update(pc(5), null, DT, 0);
   assert.equal(away.level, 1);
+});
+
+test('the starfield steps back as the planets resolve, never faster than a star can fade', () => {
+  // an autopilot arrival: each second covers the same fraction of what is left (here e per 0.55 s)
+  const tr = new SolarTransition(pc(20000));
+  let prev = 0, t = 0, started = null, done = null;
+  for (let d = 20000; d > 0.5; d *= Math.exp(-DT / 0.55), t += DT) {
+    tr.update(pc(d), null, DT, 1);
+    assert.ok(Math.abs(tr.sky - prev) <= SKY_RATE * DT + 1e-12, `eased at ${d.toFixed(0)} AU`);
+    assert.ok(tr.sky <= tr.system + 1e-12, 'never ahead of the planets resolving');
+    if (d > SYSTEM_FAR_AU) assert.equal(tr.sky, 0, `the full starfield is kept through the neighbourhood (${d.toFixed(0)} AU)`);
+    if (started === null && tr.sky > 0) started = t;
+    if (done === null && tr.sky === 1) done = t;
+    prev = tr.sky;
+  }
+  assert.ok(done - started >= 1 / SKY_RATE - 0.05 && done - started < 1 / SKY_RATE + 1.5, `stepped back over ${(done - started).toFixed(2)} s`);
+  assert.equal(tr.level, 1, 'unlike the level, which the autopilot swings before it arrives');
+
+  // flown slowly it simply tracks the planets resolving, in and out
+  const slow = new SolarTransition(pc(3000));
+  for (let d = 3000; d > 100; d *= 0.9995) { slow.update(pc(d), null, DT); assert.ok(Math.abs(slow.sky - slow.system) < 0.02); }
+  for (let d = 100; d < 3000; d *= 1.0005) { slow.update(pc(d), null, DT); assert.ok(Math.abs(slow.sky - slow.system) < 0.02); }
+  assert.equal(slow.sky, 0);
+
+  // a jump snaps it
+  slow.reset(pc(10));
+  assert.equal(slow.sky, 1);
 });
 
 test('a jump resets the hand-off without easing or announcing anything', () => {

@@ -13,6 +13,10 @@
 //                  LEVEL_RATE; an autopilot arrival crosses that whole range in about a
 //                  second, so on autopilot it sets off for the destination's level as soon
 //                  as the trip starts and the view has long settled when the ship arrives
+//   sky      0..1  how far the starfield has stepped back to let the planets read (fewer
+//                  faint stars, a dimmer Milky Way). It follows `system` too, never faster
+//                  than SKY_RATE, so stars thin out one by one as the orbits open instead
+//                  of vanishing together at the edge of the neighbourhood
 //   state          where the ship is, with hysteresis so it cannot flicker at an edge:
 //                  'interstellar'  beyond the Sun's neighbourhood
 //                  'approach'      inside it, still outside the planets
@@ -28,6 +32,7 @@ export const VOLUME_AU = 60;         // the Solar System proper: just outside Pl
 export const NEIGHBOURHOOD_AU = SOLAR_OUTER_PC * AU_PER_PC; // ~12,650 AU, where the ship drops out of warp
 export const LEAVE = 1.25;           // a zone is left this many times further out than it was entered
 export const LEVEL_RATE = 0.25;      // 1/s: the 60-degree swing of the level takes at least 4 s
+export const SKY_RATE = 0.4;         // 1/s: the starfield takes at least 2.5 s to step back or return
 
 const smooth = (t) => { const c = Math.min(1, Math.max(0, t)); return c * c * (3 - 2 * c); };
 
@@ -48,6 +53,7 @@ export class SolarTransition {
     this.zone = 0;
     this.measure(dSunPc);
     this.level = this.system;
+    this.sky = this.system;
     while (this.zone < 2 && this.dAU < ENTER[this.zone + 1]) this.zone++;
     this.host = host;
     this.settle();
@@ -79,6 +85,8 @@ export class SolarTransition {
     const step = LEVEL_RATE * dt;
     const level = bound > 0 ? 1 : bound < 0 ? 0 : this.system;
     this.level += Math.min(step, Math.max(-step, level - this.level));
+    const fade = SKY_RATE * dt;
+    this.sky += Math.min(fade, Math.max(-fade, this.system - this.sky));
     // Zones nest, so a jump across several is walked one edge at a time.
     let zone = this.zone;
     while (zone < 2 && this.dAU < ENTER[zone + 1]) zone++;

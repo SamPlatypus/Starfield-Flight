@@ -57,8 +57,9 @@ the Sun, and speeds in ly/s, AU/s or km/s to match.
 
 ## The Solar System
 
-Within 0.2 light-years of the Sun the view fades into the Solar System: the starfield steps
-back to about naked-eye depth and the planets, the asteroid belt and the orbits fade in.
+Within 0.2 light-years of the Sun the view fades into the Solar System: the Sun and planets
+appear, and as their orbits open out (from 2,000 AU in) the starfield steps back towards
+naked-eye depth and the asteroid belt and the orbits fade in.
 
 - **Real positions for today:** the planets from JPL's Keplerian elements (Standish) with
   Schlyter's perturbations of Jupiter, Saturn and Uranus; the Moon from Meeus's lunar theory;
@@ -84,7 +85,9 @@ back to about naked-eye depth and the planets, the asteroid belt and the orbits 
   planet or moon. Each edge is left a quarter further out than it is entered, so nothing
   flickers at a boundary. The view's level swings from the galactic plane to the planets'
   plane, 60° apart, at no more than 15° a second; the autopilot starts that swing as it sets
-  off, so the view has settled long before it arrives.
+  off, so the view has settled long before it arrives. The starfield keeps its full depth
+  until the planets resolve and then thins over at least 2.5 seconds (about one magnitude a
+  second at most), so faint stars fade out one by one however fast you arrive.
 - **Clock:** the planets move in real time. In the menu, run the clock at up to a year per
   second, pause it, or go back to now (AD 1000–3000).
 
@@ -169,7 +172,8 @@ npm run test:e2e     # headless Chromium: rendering, touch controls, search, fav
 Append `?stats` to the URL (or enable *Performance overlay* in the menu) to see frame rate, stars
 submitted, draw calls, the star draw path in use (`multi-draw`, `draw-loop` or `base-uniform`),
 the app version, how the faster paths compared with the safe one, and where the ship is in the
-hand-off to the Solar System (state, and how far the planets and the view's level have come in). Tapping the overlay steps
+hand-off to the Solar System (state, and how far the planets, the sky's step back and the view's
+level have come in). Tapping the overlay steps
 through the draw paths (automatic, then each one forced); `?stardraw=multi|loop|base` does the
 same from the URL, and `?fixed` pins the render quality.
 

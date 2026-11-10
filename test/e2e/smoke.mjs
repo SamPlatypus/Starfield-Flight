@@ -323,13 +323,21 @@ const AU_PER_PC = 206264.80624709636;
  */
 const watchTrip = (page, subjectId) => app(page, (id) => {
   const a = window.starfield, AU = 206264.80624709636;
-  const w = (window.trip = { offCentre: 0, turnAfter: 0, stopped: null, frames: 0, rollNear: 0, levelOnEntry: null });
+  const w = (window.trip = { offCentre: 0, turnAfter: 0, stopped: null, frames: 0, rollNear: 0, levelOnEntry: null,
+    magStart: a.lastFrame.magLimit, magMax: a.lastFrame.magLimit, magRate: 0, magInNeighbourhood: null });
   const tgt = a.ship.target;
-  const tick = () => {
+  let lastMag = a.lastFrame.magLimit, lastT = null;
+  const tick = (ts) => { // ts: the frame's own timestamp, the clock the app steps by
     const s = a.ship, b = id ? a.solar.get(id).pos.map((x) => x / AU) : [0, 0, 0];
     const to = [b[0] - s.pos[0], b[1] - s.pos[1], b[2] - s.pos[2]], l = Math.hypot(...to), f = s.forward;
     const off = Math.acos(Math.min(1, (f[0] * to[0] + f[1] * to[1] + f[2] * to[2]) / l)) * 180 / Math.PI;
     if (s.autopilot && tgt.locked) { w.offCentre = Math.max(w.offCentre, off); w.frames++; }
+    // the star limit: how fast it moves (mag/s) and where it stands once the Sun's neighbourhood is fully in
+    const mag = a.lastFrame.magLimit;
+    if (lastT !== null && ts > lastT) w.magRate = Math.max(w.magRate, Math.abs(mag - lastMag) / ((ts - lastT) / 1000));
+    lastMag = mag; lastT = ts;
+    w.magMax = Math.max(w.magMax, mag);
+    if (w.magInNeighbourhood === null && a.transition.fade >= 1) w.magInNeighbourhood = mag;
     if (a.transition.near) {
       // roll of the view (deg/s) once the Sun's neighbourhood is around the ship
       w.rollNear = Math.max(w.rollNear, Math.abs(s.omega[2]) * 180 / Math.PI);
@@ -373,6 +381,13 @@ await check('tapping the Sol marker flies home along the line of approach, the S
   // the view levelled to the planets' plane on the way, light-years out, not as it arrived
   assert.ok(trip.levelOnEntry > 0.99, `level ${trip.levelOnEntry.toFixed(2)} on reaching the Sun's neighbourhood`);
   assert.ok(trip.rollNear < 3, `the view rolled at up to ${trip.rollNear.toFixed(1)} deg/s inside it`);
+  // the starfield keeps its full depth through the Sun's neighbourhood, then thins as the planets
+  // resolve, a star at a time (default density: 7.5 in open space, 6.53 among the planets)
+  const magEnd = await app(page, () => window.starfield.lastFrame.magLimit);
+  assert.ok(Math.abs(trip.magStart - 7.5) < 1e-6 && trip.magMax <= trip.magStart + 1e-9, 'never deeper than the density setting');
+  assert.ok(Math.abs(trip.magInNeighbourhood - 7.5) < 1e-6, `star limit ${trip.magInNeighbourhood.toFixed(2)} with the neighbourhood fully in`);
+  assert.ok(Math.abs(magEnd - 6.525) < 1e-6, `star limit ${magEnd.toFixed(3)} among the planets`);
+  assert.ok(trip.magRate > 0.05 && trip.magRate < 0.6, `it moved at up to ${trip.magRate.toFixed(2)} mag/s`);
   assert.equal(r.s, 1, 'in Solar System mode');
   assert.equal(await app(page, () => window.starfield.transition.state), 'system');
   assert.match(await page.locator('#toast').textContent(), /Home/);
@@ -570,9 +585,9 @@ await check('flying in by hand: out of warp at the edge, a gentle levelling, and
   assert.ok(way.roll > 1 && way.roll < 22, `the view levelled at up to ${way.roll.toFixed(1)} deg/s`);
   await page.waitForFunction(() => window.starfield.transition.level > 0.999, null, { timeout: 15000 });
   await page.waitForTimeout(300);
-  // the overlay reports the state, e.g. "system  system 100%  level 100%" or "body Saturn  ..."
+  // the overlay reports the state, e.g. "system  system 100%  sky 100%  level 100%" or "body Saturn  ..."
   const line = (await page.locator('#stats').textContent()).split('\n').pop();
-  assert.match(line, /^(system|body \w+|approach) {2}system \d+% {2}level \d+%$/, `overlay: ${line}`);
+  assert.match(line, /^(system|body \w+|approach) {2}system \d+% {2}sky \d+% {2}level \d+%$/, `overlay: ${line}`);
 
   // Turning round and leaving is announced too, once it is well clear (hysteresis).
   await app(page, () => { const a = window.starfield; a.ship.lookAlong(a.ship.pos.map((x) => x)); });
