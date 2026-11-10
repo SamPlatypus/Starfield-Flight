@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 // End-to-end test of the production build in headless Chromium (Playwright, software GL).
-//   npm run build && node test/e2e/smoke.mjs [--shots dir]
+//   npm run build && node test/e2e/smoke.mjs [--shots dir] [--only 'part of a check's name']
 // Checks rendering, the star draw paths (and a GPU that ignores draw offsets), touch steering,
 // pinch-to-throttle, tapping stars, the Sol marker and autopilot, boost, sliders, the menu and
 // install UI, search, favourites, constellations, the Solar System (planets, units, warp
@@ -17,6 +17,8 @@ const { chromium } = require('playwright');
 const dist = join(dirname(fileURLToPath(import.meta.url)), '..', '..', 'dist');
 const shotsArg = process.argv.indexOf('--shots');
 const shots = shotsArg > 0 ? process.argv[shotsArg + 1] : null;
+const onlyArg = process.argv.indexOf('--only');
+const only = onlyArg > 0 ? process.argv[onlyArg + 1] : null; // run just the checks whose name contains this
 if (shots) await mkdir(shots, { recursive: true });
 
 const TYPES = { '.html': 'text/html', '.js': 'text/javascript', '.css': 'text/css', '.json': 'application/json',
@@ -39,6 +41,7 @@ const base = `http://localhost:${server.address().port}/`;
 const GL_ARGS = ['--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'];
 const results = [];
 async function check(name, fn) {
+  if (only && !name.includes(only)) return;
   try { await fn(); results.push(['ok', name]); console.log(`ok - ${name}`); }
   catch (err) { results.push(['FAIL', name]); console.log(`not ok - ${name}\n  ${String(err.stack || err).split('\n').slice(0, 5).join('\n  ')}`); }
 }
@@ -320,13 +323,18 @@ const AU_PER_PC = 206264.80624709636;
  */
 const watchTrip = (page, subjectId) => app(page, (id) => {
   const a = window.starfield, AU = 206264.80624709636;
-  const w = (window.trip = { offCentre: 0, turnAfter: 0, stopped: null, frames: 0 });
+  const w = (window.trip = { offCentre: 0, turnAfter: 0, stopped: null, frames: 0, rollNear: 0, levelOnEntry: null });
   const tgt = a.ship.target;
   const tick = () => {
     const s = a.ship, b = id ? a.solar.get(id).pos.map((x) => x / AU) : [0, 0, 0];
     const to = [b[0] - s.pos[0], b[1] - s.pos[1], b[2] - s.pos[2]], l = Math.hypot(...to), f = s.forward;
     const off = Math.acos(Math.min(1, (f[0] * to[0] + f[1] * to[1] + f[2] * to[2]) / l)) * 180 / Math.PI;
     if (s.autopilot && tgt.locked) { w.offCentre = Math.max(w.offCentre, off); w.frames++; }
+    if (a.transition.near) {
+      // roll of the view (deg/s) once the Sun's neighbourhood is around the ship
+      w.rollNear = Math.max(w.rollNear, Math.abs(s.omega[2]) * 180 / Math.PI);
+      if (w.levelOnEntry === null) w.levelOnEntry = a.transition.level;
+    }
     if (!s.autopilot) {
       if (!w.stopped) w.stopped = f;
       w.turnAfter = Math.max(w.turnAfter, Math.acos(Math.min(1, f[0] * w.stopped[0] + f[1] * w.stopped[1] + f[2] * w.stopped[2])) * 180 / Math.PI);
@@ -362,7 +370,11 @@ await check('tapping the Sol marker flies home along the line of approach, the S
   assert.ok(r.facing > 0.9999, 'facing the Sun');
   assert.ok(trip.frames > 20 && trip.offCentre < 3, `the Sun stayed within ${trip.offCentre.toFixed(2)} deg of the centre`);
   assert.ok(trip.turnAfter < 0.5, `turned ${trip.turnAfter.toFixed(2)} deg after stopping`);
+  // the view levelled to the planets' plane on the way, light-years out, not as it arrived
+  assert.ok(trip.levelOnEntry > 0.99, `level ${trip.levelOnEntry.toFixed(2)} on reaching the Sun's neighbourhood`);
+  assert.ok(trip.rollNear < 3, `the view rolled at up to ${trip.rollNear.toFixed(1)} deg/s inside it`);
   assert.equal(r.s, 1, 'in Solar System mode');
+  assert.equal(await app(page, () => window.starfield.transition.state), 'system');
   assert.match(await page.locator('#toast').textContent(), /Home/);
   assert.match(await page.locator('#readout .sol-dist').textContent(), /AU/);
   assert.ok(await page.locator('#labels .label.body.on').count() >= 2, 'planets are labelled');
@@ -527,13 +539,47 @@ await check('the Solar System: planets render with names, sizes and AU / km unit
   await ctx.close();
 });
 
-await check('flying at warp towards the Sun drops out of warp in the Solar System', async () => {
-  const { ctx, page } = await newPage(browser);
-  await app(page, () => { const a = window.starfield; a.ship.cancelTarget(); a.ship.pos = [2, 0.0003, 0]; a.ship.lookAlong([-1, 0, 0]); a.setThrottle(1); a.ship.speed = 60; });
+await check('flying in by hand: out of warp at the edge, a gentle levelling, and the Solar System announced once', async () => {
+  const { ctx, page } = await newPage(browser, { query: '?fixed&stats' });
+  await app(page, () => {
+    const a = window.starfield;
+    // In along -y, passing 21 AU from the Sun: from this side the galactic and the planets'
+    // planes sit 62 degrees apart in the view (along x they happen to line up).
+    a.ship.cancelTarget(); a.ship.pos = [0.0001, 2, 0]; a.ship.lookAlong([0, -1, 0]); a.setThrottle(1); a.ship.speed = 60;
+    // what happened on the way, frame by frame
+    const w = (window.way = { roll: 0, changes: [], toasts: [] });
+    const onTransition = a.onTransition.bind(a);
+    a.onTransition = (ev) => { w.changes.push(`${ev.from}>${ev.to}`); onTransition(ev); };
+    const toast = a.hud.toast.bind(a.hud);
+    a.hud.toast = (text, ms) => { w.toasts.push(text); toast(text, ms); };
+    const tick = () => { w.roll = Math.max(w.roll, Math.abs(a.ship.omega[2]) * 180 / Math.PI); requestAnimationFrame(tick); };
+    requestAnimationFrame(tick);
+  });
   await page.waitForFunction(() => window.starfield.solarS > 0.99, null, { timeout: 20000 });
-  const r = await app(page, () => { const a = window.starfield; return { x: a.ship.pos[0], d: Math.hypot(...a.ship.pos), v: a.ship.speed }; });
-  assert.ok(r.x > 0, 'still on the near side of the Sun');
+  const r = await app(page, () => { const a = window.starfield; return { y: a.ship.pos[1], d: Math.hypot(...a.ship.pos), v: a.ship.speed, state: a.transition.state }; });
+  assert.ok(r.y > 0, 'still on the near side of the Sun');
   assert.ok(r.v < 0.05, `slowed to ${r.v.toFixed(4)} pc/s`);
+  assert.equal(r.state, 'approach');
+  assert.match(await page.locator('#readout .clock').textContent(), /UTC/, 'the clock shows in the Sun\'s neighbourhood');
+
+  await page.waitForFunction(() => window.starfield.transition.state === 'system', null, { timeout: 30000 });
+  const way = await app(page, () => ({ ...window.way, au: Math.hypot(...window.starfield.ship.pos) * 206264.80624709636 }));
+  assert.ok(way.au < 60 && way.au > 20, `arrived ${way.au.toFixed(0)} AU out`);
+  assert.deepEqual(way.changes, ['interstellar>approach', 'approach>system']);
+  assert.deepEqual(way.toasts, ['Entering the Solar System']);
+  assert.ok(way.roll > 1 && way.roll < 22, `the view levelled at up to ${way.roll.toFixed(1)} deg/s`);
+  await page.waitForFunction(() => window.starfield.transition.level > 0.999, null, { timeout: 15000 });
+  await page.waitForTimeout(300);
+  // the overlay reports the state, e.g. "system  system 100%  level 100%" or "body Saturn  ..."
+  const line = (await page.locator('#stats').textContent()).split('\n').pop();
+  assert.match(line, /^(system|body \w+|approach) {2}system \d+% {2}level \d+%$/, `overlay: ${line}`);
+
+  // Turning round and leaving is announced too, once it is well clear (hysteresis).
+  await app(page, () => { const a = window.starfield; a.ship.lookAlong(a.ship.pos.map((x) => x)); });
+  await page.waitForFunction(() => window.starfield.transition.state === 'approach', null, { timeout: 30000 });
+  const out = await app(page, () => ({ ...window.way, au: Math.hypot(...window.starfield.ship.pos) * 206264.80624709636 }));
+  assert.ok(out.au > 75, `left at ${out.au.toFixed(0)} AU`);
+  assert.deepEqual(out.toasts, ['Entering the Solar System', 'Leaving the Solar System']);
   assert.deepEqual(page.errors, []);
   await ctx.close();
 });

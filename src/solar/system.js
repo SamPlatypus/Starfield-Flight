@@ -110,13 +110,17 @@ export class SolarSystem {
   get(id) { return this.byId.get(id); }
   positionPc(id) { const p = this.byId.get(id).pos; return [p[0] / AU_PER_PC, p[1] / AU_PER_PC, p[2] / AU_PER_PC]; }
 
-  /** Innermost body whose neighbourhood contains `au` (null: the Sun's frame). */
-  frameBody(au) {
+  /**
+   * Innermost body whose neighbourhood contains `au` (null: the Sun's frame). The body the
+   * ship is already with (`current`) keeps it until `keep` times further out, so skimming
+   * the edge of a neighbourhood does not switch frames back and forth.
+   */
+  frameBody(au, current = null, keep = 1.2) {
     let best = null;
     for (const b of this.bodies) {
       if (!b.region) continue;
       const d = Math.hypot(au[0] - b.pos[0], au[1] - b.pos[1], au[2] - b.pos[2]);
-      if (d < b.region && (!best || b.region < best.region)) best = b;
+      if (d < b.region * (b === current ? keep : 1) && (!best || b.region < best.region)) best = b;
     }
     return best;
   }

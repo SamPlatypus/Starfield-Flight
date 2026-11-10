@@ -51,8 +51,8 @@ H home, M menu, / search, F favourites, C hide controls, L names, K constellatio
 N constellation names, Esc closes panels.
 
 Controls fade to near-invisible after a few seconds; the view keeps the plane of the Milky Way
-level (the planets' plane inside the Solar System; turn this off in the menu for free flight)
-and banks gently into turns. Distances read in light-years among the stars, in AU and km near
+level (easing over to the planets' plane as you come in among them; turn this off in the menu
+for free flight) and banks gently into turns. Distances read in light-years among the stars, in AU and km near
 the Sun, and speeds in ly/s, AU/s or km/s to match.
 
 ## The Solar System
@@ -77,6 +77,14 @@ back to about naked-eye depth and the planets, the asteroid belt and the orbits 
   pace with it as it moves; you can't fly into anything. The autopilot looks at where it is
   going to stop and look, not at where it is going: the planet stays in the middle of the view
   while the ship slides round to its sunlit side, and nothing turns once it has stopped.
+- **Arriving:** the way in is one hand-off, worked out in one place (`src/solar/transition.js`)
+  from the distance to the Sun: the Sun's neighbourhood (0.2 light-years, where the ship drops
+  out of warp), the planets resolving (2,000 to 150 AU, in log distance), the Solar System
+  proper (inside 60 AU, announced when you fly in or out by hand) and the neighbourhood of a
+  planet or moon. Each edge is left a quarter further out than it is entered, so nothing
+  flickers at a boundary. The view's level swings from the galactic plane to the planets'
+  plane, 60° apart, at no more than 15° a second; the autopilot starts that swing as it sets
+  off, so the view has settled long before it arrives.
 - **Clock:** the planets move in real time. In the menu, run the clock at up to a year per
   second, pause it, or go back to now (AD 1000–3000).
 
@@ -160,7 +168,8 @@ npm run test:e2e     # headless Chromium: rendering, touch controls, search, fav
 
 Append `?stats` to the URL (or enable *Performance overlay* in the menu) to see frame rate, stars
 submitted, draw calls, the star draw path in use (`multi-draw`, `draw-loop` or `base-uniform`),
-the app version and how the faster paths compared with the safe one. Tapping the overlay steps
+the app version, how the faster paths compared with the safe one, and where the ship is in the
+hand-off to the Solar System (state, and how far the planets and the view's level have come in). Tapping the overlay steps
 through the draw paths (automatic, then each one forced); `?stardraw=multi|loop|base` does the
 same from the URL, and `?fixed` pins the render quality.
 
@@ -225,7 +234,7 @@ src/app.js                   loading, frame loop, commands
 src/catalog.js               decoder for public/data/stars.bin
 src/culling.js               magnitude-band octree + frustum culling
 src/flight.js                ship physics, steering, levelling, boost, autopilot
-src/solar/                   ephemerides, body data, Solar System state and view
+src/solar/                   ephemerides, body data, Solar System state and view, the interstellar hand-off
 src/search.js, src/favourites.js, src/constellations.js   search index, favourites, figures
 src/render/                  WebGL2 renderer, shaders, blackbody colours, Solar System pass
 src/hud.js, src/controls.js, src/panels.js, src/input.js   markers, labels, sliders, panels, touch/mouse/keys

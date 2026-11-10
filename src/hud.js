@@ -278,7 +278,7 @@ export class Hud {
       setText(this.solReadout, `Sol ${d}`);
       setText(this.speed, formatSpeed(ship.speed));
       setText(this.mode, ship.autopilot ? 'Autopilot' : ship.boost > 0.5 ? 'Boost' : '');
-      setText(this.clock, sS > 0.02 ? this.clockText() : '');
+      setText(this.clock, f.near ? this.clockText() : '');
     }
 
     // ---- the selected star or body
@@ -305,7 +305,7 @@ export class Hud {
     }
 
     if (this.showLabels) {
-      if (sS > 0.3) this.updateBodyLabels(f, bodies, textTick, skipBody, taken); else this.bodyLabels.hideAll();
+      if (f.near) this.updateBodyLabels(f, bodies, textTick, skipBody, taken); else this.bodyLabels.hideAll();
       // In the Solar System the planets get the labels; only the brightest stars keep theirs.
       this.updateStarLabels(f, bodies, textTick, skipStar, taken, Math.round(STAR_LABELS - 4 * Math.min(1, sS * 1.5)));
     }

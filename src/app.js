@@ -18,7 +18,8 @@ import { haptic, setHaptics, onBackButton, onPauseResume } from './platform.js';
 import { Constellations, LINE_ALPHA, solFade } from './constellations.js';
 import { SearchIndex } from './search.js';
 import { Favourites, FAVOURITES_LIMIT } from './favourites.js';
-import { SolarSystem, solarIntensity, solarSpeedCap, parkingSide, ECLIPTIC_NORTH, AU_PER_PC } from './solar/system.js';
+import { SolarSystem, solarSpeedCap, parkingSide, ECLIPTIC_NORTH, AU_PER_PC } from './solar/system.js';
+import { SolarTransition, NEIGHBOURHOOD_AU } from './solar/transition.js';
 import { SolarView } from './solar/view.js';
 import { describeBody } from './solar/bodies.js';
 import { julianDay } from './solar/astro.js';
@@ -34,6 +35,7 @@ const DEFAULT_THROTTLE = 0.68;
 // The Solar System clock runs between AD 1000 and 3000, where the planetary elements hold.
 const CLOCK_MIN = julianDay(Date.UTC(1000, 0, 1));
 const CLOCK_MAX = julianDay(Date.UTC(3000, 0, 1));
+const NEIGHBOURHOOD_PC = NEIGHBOURHOOD_AU / AU_PER_PC;
 
 function loadImage(url) {
   return new Promise((resolve, reject) => {
@@ -77,7 +79,9 @@ export class App {
     this.tail = new Float32Array(3);
     this.ranges = { starts: null, counts: null, n: 0 };
     this.rollRateInput = 0;
-    this.solarS = 0;
+    this.transition = new SolarTransition(); // the interstellar <-> Solar System hand-off, updated every frame
+    this.shipAt = [NaN, NaN, NaN];           // where the last frame left the ship
+    this.solarS = 0;                         // its `fade`, kept at hand
     this.timeOffsetDays = 0;    // simulated minus real time
     this.timeRate = 1;          // simulated seconds per second
   }
@@ -182,14 +186,25 @@ export class App {
     const ship = this.ship;
     const s = this.settings;
 
-    // Simulated time and the Solar System. Inside a body's neighbourhood the ship moves with
-    // it, and the autopilot matches the motion of the body it is flying to.
+    // Simulated time and the Solar System. Where the ship is in the hand-off between the
+    // stars and the planets is worked out here, once, for everything below. Inside a body's
+    // neighbourhood the ship moves with it, and the autopilot matches the motion of the body
+    // it is flying to.
     this.tickClock(dt);
     const solar = this.solar;
+    const tr = this.transition;
     const dSun = v3.len(ship.pos);
-    this.solarS = solarIntensity(dSun);
+    // Flying moves the ship only inside this function. Anything else that put it somewhere
+    // new since the last frame (start-up, a jump) is not a journey: the hand-off snaps there.
+    const at = this.shipAt;
+    if (at[0] !== ship.pos[0] || at[1] !== ship.pos[1] || at[2] !== ship.pos[2]) tr.reset(dSun);
+    const host = tr.near || dSun < NEIGHBOURHOOD_PC ? solar.frameBody(v3.scale(ship.pos, AU_PER_PC), tr.host) : null;
+    const bound = ship.autopilot && ship.target ? (ship.target.kind === 'star' ? -1 : 1) : 0;
+    tr.update(dSun, host, dt, bound);
+    for (const ev of tr.events.splice(0)) this.onTransition(ev);
+    this.solarS = tr.fade;
     const chasing = ship.autopilot && ship.target?.kind === 'body' ? solar.get(ship.target.id) : null;
-    const frameBody = chasing || (this.solarS > 0 ? solar.frameBody(v3.scale(ship.pos, AU_PER_PC)) : null);
+    const frameBody = chasing || host;
     solar.update(this.simJD);
     if (frameBody) {
       const b = frameBody;
@@ -197,8 +212,7 @@ export class App {
     }
     this.frameBody = frameBody;
 
-    // Near planets the throttle covers the distance to the nearest surface in ~7 s, and the
-    // view levels to the ecliptic instead of the galactic plane.
+    // Near planets the throttle covers the distance to the nearest surface in ~7 s.
     const sS = this.solarS;
     let dEff = dSun;
     if (sS > 0) {
@@ -214,7 +228,9 @@ export class App {
     // Heading into the Solar System the ship eases out of warp at its edge instead of
     // coasting through it in a frame or two.
     ship.speedCap = solarSpeedCap(ship.pos, ship.forward, dEff, ship.boostFactor);
-    ship.levelUp = sS > 0 ? v3.norm(v3.add(v3.scale(GALACTIC_NORTH, 1 - sS), v3.scale(ECLIPTIC_NORTH, sS))) : GALACTIC_NORTH;
+    // The view levels to the planets' plane instead of the galactic plane as they resolve.
+    const lv = tr.level;
+    ship.levelUp = lv > 0 ? v3.norm(v3.add(v3.scale(GALACTIC_NORTH, 1 - lv), v3.scale(ECLIPTIC_NORTH, lv))) : GALACTIC_NORTH;
 
     // Inputs and flight.
     const st = this.steerSources;
@@ -228,6 +244,7 @@ export class App {
       if (solar.keepOutside(au)) ship.pos = v3.scale(au, 1 / AU_PER_PC);
     }
     for (const ev of ship.events.splice(0)) this.onShipEvent(ev);
+    at[0] = ship.pos[0]; at[1] = ship.pos[1]; at[2] = ship.pos[2];
 
     // Camera.
     const w = this.renderer.canvas.width, h = this.renderer.canvas.height;
@@ -294,6 +311,7 @@ export class App {
     lf.magLimit = magLimit;
     lf.now = now;
     lf.solarS = sS;
+    lf.near = tr.near;
     lf.bodies = this.solarView.screen;
     this.hud.update(lf);
     if ((this.frameNo++ & 7) === 0) {
@@ -315,7 +333,24 @@ export class App {
       lines.push(`solar ${(this.solarS * 100).toFixed(0)}%  bodies ${solarFrame.bodies.length}  orbits ${solarFrame.orbits.length}` +
         `${this.frameBody ? `  moving with ${this.frameBody.name}` : ''}`);
     }
+    const tr = this.transition;
+    lines.push(`${tr.state}${tr.host ? ` ${tr.host.name}` : ''}  system ${(tr.system * 100).toFixed(0)}%  level ${(tr.level * 100).toFixed(0)}%`);
     el.textContent = lines.join('\n');
+  }
+
+  /**
+   * The ship crossed from one part of the hand-off to another (see solar/transition.js).
+   * Arriving or leaving under your own hands is announced; the autopilot reports its own
+   * arrival when it parks.
+   */
+  onTransition(ev) {
+    if (this.ship.autopilot) return;
+    if (ev.from === 'approach' && ev.to === 'system') {
+      this.hud.toast('Entering the Solar System', 2600);
+      haptic('light');
+    } else if (ev.from === 'system' && ev.to === 'approach') {
+      this.hud.toast('Leaving the Solar System', 2600);
+    }
   }
 
   onShipEvent(ev) {
@@ -560,7 +595,7 @@ export class App {
     const { starts, counts, n } = this.ranges;
     for (let r = 0; r < n; r++) {
       for (let i = starts[r], end = starts[r] + counts[r]; i < end; i++) {
-        if (i === this.solIndex && this.solarS > 0.5) continue;
+        if (i === this.solIndex && this.solarS > 0.5) continue; // the Sun's own disc or point has taken over
         v[0] = tex[i * 4]; v[1] = tex[i * 4 + 1]; v[2] = tex[i * 4 + 2];
         p.toView(v, v);
         if (v[2] >= 0) continue;
@@ -582,7 +617,7 @@ export class App {
     // A tap on the sky closes an open panel first.
     if (this.controls.search.close() || this.controls.favs.close()) return;
     // Bodies of the Solar System first, then stars, then just a direction.
-    const body = this.solarS > 0.05 ? this.solarView.pick(x, y) : null;
+    const body = this.transition.near ? this.solarView.pick(x, y) : null;
     if (body) { this.select({ kind: 'body', id: body.id }); return; }
     const star = this.pick(x, y);
     if (star >= 0 && star === this.solIndex) { this.select({ kind: 'body', id: 'sun' }); return; }
