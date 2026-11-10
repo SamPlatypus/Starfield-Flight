@@ -169,49 +169,74 @@ await check('boots without errors and renders a starfield with the Milky Way', a
   await ctx.close();
 });
 
-await check('star draw paths: the offset probe passes here and all three paths draw the same sky', async () => {
+await check('star draw paths: the fast path is verified against the safe one, and all three draw the same sky', async () => {
   const sky = {};
   for (const mode of ['auto', 'multi', 'loop', 'base']) {
     const { ctx, page } = await newPage(browser, { query: mode === 'auto' ? '?fixed' : `?fixed&stardraw=${mode}` });
+    // Automatic: flying, the fast path is compared with the safe one three times over ~10 s.
+    if (mode === 'auto') await page.waitForFunction(() => window.starfield.renderer.starDraw.done, null, { timeout: 30000 });
     sky[mode] = await stillSky(page);
     assert.deepEqual(page.errors, []);
     await ctx.close();
   }
-  const auto = sky.auto.draw;
+  const auto = sky.auto.draw, fast = auto.hasMulti ? 'multi' : 'loop';
   assert.equal(auto.fault, false, 'no draw-offset fault on this GPU');
-  assert.equal(auto.probe.loop, true, 'drawArrays honours its offset');
-  assert.equal(auto.mode, auto.hasMulti ? 'multi' : 'loop', `fastest path chosen: ${auto.mode}`);
+  assert.equal(auto.mode, fast, `the fast path took over: ${auto.mode}`);
+  assert.deepEqual(auto.tests[fast], { ok: 3, bad: false, diff: 0 }, 'it matched the safe path in all three comparisons');
   for (const mode of ['multi', 'loop', 'base']) {
     if (mode === 'multi' && !auto.hasMulti) continue;
-    assert.equal(sky[mode].draw.mode, mode, `?stardraw=${mode} forces the ${mode} path`);
+    assert.ok(sky[mode].draw.mode === mode && sky[mode].draw.forced, `?stardraw=${mode} forces the ${mode} path`);
     const d = gridDiff(sky.auto.grid, sky[mode].grid);
     assert.ok(d < 0.5, `the ${mode} path draws the same sky (max block difference ${d.toFixed(2)})`);
   }
 });
 
-await check('a GPU that ignores draw offsets is detected and still shows the right stars', async () => {
+await check('a GPU that ignores draw offsets still shows the right stars, and says so', async () => {
   const healthy = await newPage(browser);
   const want = await stillSky(healthy.page);
   await healthy.ctx.close();
 
   const fixed = await newPage(browser, { query: '?fixed&stats', init: IGNORE_DRAW_OFFSETS });
   const got = await stillSky(fixed.page);
-  assert.equal(got.draw.fault, true, 'fault detected');
-  assert.equal(got.draw.probe.loop, false, 'probe saw drawArrays ignore its offset');
-  assert.equal(got.draw.mode, 'base', 'range starts passed as a uniform');
+  assert.equal(got.draw.mode, 'base', 'stays on the path that never uses a draw offset');
+  assert.equal(got.draw.fault, true, 'fault reported');
+  for (const path of got.draw.candidates) assert.equal(got.draw.tests[path]?.bad, true, `${path} seen to draw the wrong stars`);
   const d = gridDiff(want.grid, got.grid);
   assert.ok(d < 0.5, `same sky as a healthy GPU (max block difference ${d.toFixed(2)})`);
   await fixed.page.waitForTimeout(250);
-  assert.match(await fixed.page.locator('#stats').textContent(), /base-uniform\s+gpu ignores draw offsets/);
+  assert.match(await fixed.page.locator('#stats').textContent(), /base-uniform\s+v\S+ {2}star check: (multi WRONG, )?loop WRONG/);
   await shot(fixed.page, 'draw-offset-fault-fixed');
   await fixed.ctx.close();
 
-  // Without the workaround the same GPU stacks the catalogue's first stars into bright squares.
+  // Forced onto the fast path, the same GPU stacks the catalogue's first stars into bright squares.
   const broken = await newPage(browser, { query: `?fixed&stardraw=${got.draw.hasMulti ? 'multi' : 'loop'}`, init: IGNORE_DRAW_OFFSETS });
   const bad = await stillSky(broken.page);
-  assert.ok(gridDiff(want.grid, bad.grid) > 5, `the emulated fault is visible without the workaround (${gridDiff(want.grid, bad.grid).toFixed(1)})`);
+  assert.ok(gridDiff(want.grid, bad.grid) > 5, `the emulated fault is visible on the fast path (${gridDiff(want.grid, bad.grid).toFixed(1)})`);
   await shot(broken.page, 'draw-offset-fault-unfixed');
   await broken.ctx.close();
+});
+
+await check('tapping the performance overlay steps through the star draw paths and remembers the choice', async () => {
+  const { ctx, page } = await newPage(browser, { query: '?fixed&stats' });
+  const state = () => app(page, () => ({ setting: window.starfield.settings.starDraw, mode: window.starfield.renderer.starDraw.mode, forced: window.starfield.renderer.starDraw.forced }));
+  await page.waitForFunction(() => window.starfield.renderer.starDraw.tests.multi || window.starfield.renderer.starDraw.tests.loop);
+  assert.equal((await state()).setting, 'auto');
+  await page.click('#stats');
+  assert.deepEqual(await state(), { setting: 'base', mode: 'base', forced: true });
+  await page.waitForFunction(() => /base-uniform \(forced\)/.test(document.getElementById('stats').textContent));
+  await page.waitForFunction(() => JSON.parse(localStorage.getItem('starfield-flight.settings.v1')).starDraw === 'base', null, { timeout: 5000 });
+  await page.reload();
+  await page.waitForFunction(() => window.starfield && window.starfield.running && window.starfield.lastFrame, null, { timeout: 30000 });
+  assert.deepEqual(await state(), { setting: 'base', mode: 'base', forced: true }, 'kept across a restart');
+  await page.click('#stats');
+  assert.deepEqual(await state(), { setting: 'loop', mode: 'loop', forced: true });
+  const hasMulti = await app(page, () => !!window.starfield.renderer.multiDraw);
+  if (hasMulti) { await page.click('#stats'); assert.deepEqual(await state(), { setting: 'multi', mode: 'multi', forced: true }); }
+  await page.click('#stats');
+  assert.equal((await state()).setting, 'auto');
+  assert.equal((await state()).forced, false);
+  assert.deepEqual(page.errors, []);
+  await ctx.close();
 });
 
 await check('the Sol marker points home, on screen and from behind', async () => {

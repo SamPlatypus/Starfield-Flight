@@ -16,6 +16,7 @@ export const DEFAULTS = {
   lines: true,         // constellation stick figures
   conNames: false,     // constellation names (IAU abbreviations)
   orbits: true,        // Solar System orbits
+  starDraw: 'auto',    // star draw path: 'auto' | 'base' | 'loop' | 'multi' (tap the performance overlay)
   hintSeen: false,
   installDismissed: false,
 };

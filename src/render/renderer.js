@@ -34,80 +34,22 @@ function program(gl, vs, fs, attribs = {}) {
   return { p, u: uniforms };
 }
 
-// The same quad layout as the star shader, writing the quad index it derived from
-// gl_VertexID into the colour, so a 1-pixel read-back shows which star a draw would fetch.
-const PROBE_VS = `#version 300 es
-precision highp float;
-precision highp int;
-flat out int vQuad;
-void main() {
-  int quad = gl_VertexID / 6;
-  int corner = gl_VertexID - quad * 6;
-  vQuad = quad;
-  gl_Position = vec4(corner == 2 || corner == 3 || corner == 5 ? 1.0 : -1.0, corner == 1 || corner == 4 || corner == 5 ? 1.0 : -1.0, 0.0, 1.0);
-}
-`;
-const PROBE_FS = `#version 300 es
-precision highp float;
-precision highp int;
-flat in int vQuad;
-out vec4 outColour;
-void main() { outColour = vec4(float(vQuad & 255), float((vQuad >> 8) & 255), float((vQuad >> 16) & 255), 255.0) / 255.0; }
-`;
-
-/**
- * Does gl_VertexID start at a draw's `first` on this GPU? The star pass depends on it, and
- * some mobile drivers start every draw at 0 instead: each star range then redraws the first
- * stars of the catalogue (the most luminous few hundred, stacked up to ~200 times into
- * saturated squares) and nothing else is drawn. Draws one quad at a known offset into a
- * tiny framebuffer, through each call the star pass can use, and reads back which quad the
- * shader saw. Returns { multi, loop }: true where the offset was honoured.
- */
-export function probeDrawOffsets(gl, multiDraw) {
-  const result = { multi: false, loop: false };
-  let prog = null, tex = null, fbo = null, vao = null;
-  try {
-    prog = program(gl, PROBE_VS, PROBE_FS).p;
-    tex = gl.createTexture();
-    gl.bindTexture(gl.TEXTURE_2D, tex);
-    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 2, 2, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
-    fbo = gl.createFramebuffer();
-    gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
-    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, tex, 0);
-    if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) === gl.FRAMEBUFFER_COMPLETE) {
-      vao = gl.createVertexArray();
-      gl.bindVertexArray(vao);
-      gl.viewport(0, 0, 2, 2);
-      gl.disable(gl.BLEND);
-      gl.useProgram(prog);
-      const px = new Uint8Array(4);
-      const quadDrawn = (draw) => {
-        gl.clearColor(1, 1, 1, 1);
-        gl.clear(gl.COLOR_BUFFER_BIT);
-        draw();
-        gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px);
-        return px[0] | (px[1] << 8) | (px[2] << 16);
-      };
-      // Offsets as large as real star indices; the second multi-draw range must win.
-      const A = 300, B = 70001;
-      result.loop = quadDrawn(() => gl.drawArrays(gl.TRIANGLES, B * 6, 6)) === B;
-      result.multi = !!multiDraw && quadDrawn(() => multiDraw.multiDrawArraysWEBGL(
-        gl.TRIANGLES, new Int32Array([A * 6, B * 6]), 0, new Int32Array([6, 6]), 0, 2)) === B;
-    }
-  } catch (err) {
-    console.warn('draw-offset probe failed', err);
-  }
-  gl.bindFramebuffer(gl.FRAMEBUFFER, null);
-  gl.bindVertexArray(null);
-  gl.useProgram(null);
-  gl.deleteFramebuffer(fbo);
-  gl.deleteTexture(tex);
-  gl.deleteVertexArray(vao);
-  gl.deleteProgram(prog);
-  return result;
-}
-
+// How star ranges reach the GPU. Stars have no vertex buffers: the shader takes the star
+// index from gl_VertexID, so a culled range [start, start + count) is naturally one
+// drawArrays(first = start * 6). Some mobile GPUs start gl_VertexID at 0 for such draws
+// whatever `first` says: every range then redraws the first stars of the catalogue (the
+// most luminous few hundred, stacked up to ~200 times into saturated squares) and nothing
+// else appears. Rather than trust a synthetic test to detect that, the renderer starts on
+// the path that cannot go wrong and only moves to a faster one after comparing real frames:
+//   base   drawArrays(0, count) per range, range start in the uBase uniform: never uses `first`
+//   loop   drawArrays(first, count) per range
+//   multi  one multiDrawArrays call for all ranges (WEBGL_multi_draw)
 export const STAR_DRAW_MODES = ['multi', 'loop', 'base'];
+const STAR_DRAW_NAMES = { multi: 'multi-draw', loop: 'draw-loop', base: 'base-uniform' };
+const CHECK_SIZE = 192;          // px: side of the corner of the frame the comparison is drawn into
+const CHECK_AT = [0, 2000, 10000]; // ms of rendering after which a fast path is (re)compared with `base`
+const CHECK_MIN_LIT = 40;        // lit pixels needed for a comparison to mean anything
+const CHECK_MAX_DIFF = 8;        // differing pixels tolerated (an exact match is expected)
 
 export class Renderer {
   /**
@@ -139,7 +81,7 @@ export class Renderer {
   init() {
     const gl = this.gl;
     this.multiDraw = gl.getExtension('WEBGL_multi_draw');
-    this.starDraw = this.chooseStarDraw();
+    this.resetStarDraw();
     this.star = program(gl, STAR_VS, STAR_FS);
     this.sky = program(gl, SKY_VS, SKY_FS);
     this.vao = gl.createVertexArray();
@@ -179,28 +121,98 @@ export class Renderer {
   }
 
   /**
-   * How star ranges reach the GPU, fastest path that draws the right stars first:
-   *   multi  one multiDrawArrays call for every range (WEBGL_multi_draw)
-   *   loop   one drawArrays(first, count) per range
-   *   base   one drawArrays(0, count) per range with the range start in a uniform, for
-   *          drivers that ignore `first` when numbering vertices (see probeDrawOffsets)
-   * Returns { mode, probe: { multi, loop }, forced, fault, label } (label: stats overlay).
+   * Starts on the safe path with the faster ones still to be verified (see checkStarDraw).
+   * this.starDraw = { mode, forced, candidates, tests: { path: { ok, bad, diff } }, ... }
    */
-  chooseStarDraw() {
+  resetStarDraw() {
+    const forced = this.forceStarDraw && (this.forceStarDraw !== 'multi' || this.multiDraw) ? this.forceStarDraw : null;
+    this.starDraw = {
+      mode: forced || 'base', forced: !!forced,
+      candidates: this.multiDraw ? ['multi', 'loop'] : ['loop'],
+      candidate: 0,          // index of the fast path under test; candidates.length = none left
+      step: 0,               // index into CHECK_AT of the next comparison
+      since: 0,              // when rendering (re)started, ms
+      retryAt: 0,            // earliest time of the next comparison after an inconclusive one
+      tests: {},
+      fault: false, done: false, label: '', status: '',
+    };
+    this.describeStarDraw();
+  }
+
+  /** Forces a draw path ('multi' | 'loop' | 'base'), or null for automatic. */
+  setStarDraw(mode) {
+    this.forceStarDraw = STAR_DRAW_MODES.includes(mode) ? mode : null;
+    this.resetStarDraw();
+  }
+
+  describeStarDraw() {
+    const sd = this.starDraw;
+    sd.label = `${STAR_DRAW_NAMES[sd.mode]}${sd.forced ? ' (forced)' : ''}`;
+    const parts = sd.candidates.filter((c) => sd.tests[c]).map((c) => {
+      const t = sd.tests[c];
+      return t.bad ? `${c} WRONG` : `${c} ok ${t.ok}/${CHECK_AT.length}`;
+    });
+    sd.status = parts.length ? parts.join(', ') : 'pending';
+  }
+
+  /**
+   * Compares a fast draw path with `base` on the real frame: both draw this frame's star
+   * ranges, with this frame's uniforms, into a corner of the canvas (the frame proper is
+   * drawn over it afterwards) and must give the same pixels. A path that matches takes over
+   * and is compared again a few seconds later, in case the driver swaps in a different
+   * shader build; one that differs is dropped for good.
+   */
+  checkStarDraw(f, now) {
+    const sd = this.starDraw;
+    if (!sd.since) sd.since = now;
+    const path = sd.candidates[sd.candidate];
+    if (!path) { sd.done = true; return; }
+    if (now - sd.since < CHECK_AT[sd.step] || now < sd.retryAt || f.ranges.n === 0) return;
     const gl = this.gl;
-    const hasMulti = !!this.multiDraw;
-    // A lost context reads back nothing: keep the usual path, init() runs again on restore.
-    const probe = gl.isContextLost() ? { multi: hasMulti, loop: true } : probeDrawOffsets(gl, this.multiDraw);
-    let mode = probe.multi ? 'multi' : probe.loop ? 'loop' : 'base';
-    const forced = !!this.forceStarDraw && (this.forceStarDraw !== 'multi' || hasMulti);
-    if (forced) mode = this.forceStarDraw;
-    const fault = (hasMulti && !probe.multi) || !probe.loop;
-    if (fault) {
-      console.warn(`Star draw: this GPU ignores draw offsets (multi-draw ${hasMulti ? (probe.multi ? 'ok' : 'wrong') : 'absent'}, ` +
-        `drawArrays ${probe.loop ? 'ok' : 'wrong'}); using the '${mode}' path.`);
+    const S = Math.min(CHECK_SIZE, this.canvas.width, this.canvas.height);
+    const bytes = S * S * 4;
+    if (!this.checkA || this.checkA.length !== bytes) { this.checkA = new Uint8Array(bytes); this.checkB = new Uint8Array(bytes); }
+    const { starts, counts, n } = f.ranges;
+    gl.enable(gl.SCISSOR_TEST);
+    gl.scissor(0, 0, S, S);
+    gl.viewport(0, 0, S, S);
+    gl.clearColor(0, 0, 0, 1);
+    const shoot = (mode, out) => {
+      gl.clear(gl.COLOR_BUFFER_BIT);
+      this.drawStars(f, S, S, starts, counts, n, mode);
+      gl.readPixels(0, 0, S, S, gl.RGBA, gl.UNSIGNED_BYTE, out);
+    };
+    shoot('base', this.checkA);
+    shoot(path, this.checkB);
+    gl.disable(gl.SCISSOR_TEST);
+    gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+    if (gl.isContextLost()) return;
+
+    const A = this.checkA, B = this.checkB;
+    let lit = 0, diff = 0;
+    for (let i = 0; i < bytes; i += 4) {
+      if (A[i] > 16 || A[i + 1] > 16 || A[i + 2] > 16) lit++;
+      if (Math.abs(A[i] - B[i]) > 4 || Math.abs(A[i + 1] - B[i + 1]) > 4 || Math.abs(A[i + 2] - B[i + 2]) > 4) diff++;
     }
-    const name = { multi: 'multi-draw', loop: 'draw-loop', base: 'base-uniform' }[mode];
-    return { mode, probe, forced, fault, label: `${name}${forced ? ' (forced)' : ''}` };
+    if (lit < CHECK_MIN_LIT && diff <= CHECK_MAX_DIFF) { sd.retryAt = now + 500; return; } // too few stars in view to tell
+    const t = sd.tests[path] || (sd.tests[path] = { ok: 0, bad: false, diff: 0 });
+    if (diff > CHECK_MAX_DIFF) {
+      t.bad = true;
+      t.diff = diff;
+      sd.fault = true;
+      sd.candidate++;
+      sd.step = 0;
+      sd.since = now;
+      if (!sd.forced) sd.mode = 'base';
+      console.warn(`Star draw: '${path}' draws different stars from the offset-free path on this GPU ` +
+        `(${diff} of ${S * S} pixels differ); not using it.`);
+    } else {
+      t.ok++;
+      if (!sd.forced) sd.mode = path;
+      if (++sd.step >= CHECK_AT.length) sd.candidate = sd.candidates.length; // verified
+    }
+    sd.done = sd.candidate >= sd.candidates.length;
+    this.describeStarDraw();
   }
 
   nearest(target) {
@@ -247,6 +259,7 @@ export class Renderer {
     const w = this.canvas.width, h = this.canvas.height;
     gl.viewport(0, 0, w, h);
     gl.bindVertexArray(this.vao);
+    if (!this.starDraw.done) this.checkStarDraw(f, performance.now());
 
     // Milky Way (opaque, covers the screen).
     gl.disable(gl.BLEND);
@@ -299,7 +312,7 @@ export class Renderer {
     gl.bindVertexArray(this.vao);
   }
 
-  drawStars(f, w, h, starts, counts, n) {
+  drawStars(f, w, h, starts, counts, n, mode = this.starDraw.mode) {
     const gl = this.gl;
     const { p, u } = this.star;
     gl.useProgram(p);
@@ -325,9 +338,8 @@ export class Renderer {
     gl.uniform1i(u.uHideIndex, f.hideIndex ?? -1);
     gl.uniform1f(u.uHideScale, f.hideScale ?? 1);
 
-    const mode = this.starDraw.mode;
     if (mode === 'base') {
-      // This GPU numbers every draw's vertices from 0: hand the range start to the shader.
+      // Never relies on the draw's `first`: the shader adds the range start itself.
       for (let i = 0; i < n; i++) {
         gl.uniform1i(u.uBase, starts[i]);
         gl.drawArrays(gl.TRIANGLES, 0, counts[i] * 6);

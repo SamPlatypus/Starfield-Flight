@@ -260,7 +260,7 @@ button { cursor: pointer; }
 
 #stats {
   position: fixed; left: calc(var(--sal) + 10px); top: calc(var(--sat) + 64px); font: 11px/1.4 ui-monospace, monospace;
-  color: #9fe39f; text-shadow: 0 0 3px #000; pointer-events: none; white-space: pre;
+  color: #9fe39f; text-shadow: 0 0 3px #000; white-space: pre; user-select: none; -webkit-user-select: none;
 }
 
 /* ------------------------------------------------------------------ loading */

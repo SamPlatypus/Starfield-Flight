@@ -24,6 +24,7 @@ import { describeBody } from './solar/bodies.js';
 import { julianDay } from './solar/astro.js';
 
 const BASE = import.meta.env?.BASE_URL ?? './';
+const VERSION = typeof __APP_VERSION__ === 'string' ? __APP_VERSION__ : 'dev';
 const SKY_FACES = ['px', 'nx', 'py', 'ny', 'pz', 'nz'];
 const DPR_CAP = 2;
 const START_HEADING = radec(83.8, -1.2);   // Orion's belt
@@ -55,7 +56,7 @@ export class App {
     this.ship.throttle = this.settings.throttle;
     this.perf = new PerfGovernor();
     // ?fixed pins quality (automated screenshots on software GL); ?stats shows the overlay;
-    // ?stardraw=multi|loop|base forces a star draw path (see Renderer.chooseStarDraw).
+    // ?stardraw=multi|loop|base forces a star draw path (see the draw paths in renderer.js).
     const q = new URLSearchParams(location.search);
     this.perf.locked = q.has('fixed');
     if (q.has('stats')) this.settings.stats = true;
@@ -101,7 +102,8 @@ export class App {
     this.solarView = new SolarView(this.solar);
     this.search = new SearchIndex(searchData, this.catalog, this.solar.bodies);
     this.favourites = new Favourites(this.catalog);
-    this.renderer = new Renderer(this.canvas, this.catalog, sky, this.constellations.pairs, { starDraw: this.starDrawOverride });
+    this.renderer = new Renderer(this.canvas, this.catalog, sky, this.constellations.pairs,
+      { starDraw: this.starDrawOverride || this.settings.starDraw });
     this.culler = new Culler(this.catalog);
 
     this.hud = new Hud(this);
@@ -307,11 +309,7 @@ export class App {
       `stars submitted ${culler.starsSubmitted.toLocaleString('en-US')} / ${this.catalog.count.toLocaleString('en-US')}`,
       `draws ${culler.rangeCount}  nodes ${culler.nodesVisited}  ${this.renderer.starDraw.label}`,
     ];
-    const sd = this.renderer.starDraw;
-    if (sd.fault) {
-      const state = (ok) => (ok ? 'ok' : 'no');
-      lines.push(`gpu ignores draw offsets: multi ${this.renderer.multiDraw ? state(sd.probe.multi) : 'absent'}, loop ${state(sd.probe.loop)}`);
-    }
+    lines.push(`v${VERSION}  star check: ${this.renderer.starDraw.status}`);
     if (solarFrame) {
       lines.push(`solar ${(this.solarS * 100).toFixed(0)}%  bodies ${solarFrame.bodies.length}  orbits ${solarFrame.orbits.length}` +
         `${this.frameBody ? `  moving with ${this.frameBody.name}` : ''}`);
@@ -475,6 +473,16 @@ export class App {
     this.selected = null;
     this.hud.toast(`Jumped to ${pick.name}, ${formatDistance(v3.len(p))} from Sol. Follow the SOL marker home.`, 5000);
     haptic('heavy');
+  }
+
+  /** Tapping the performance overlay steps through the star draw paths (diagnostics). */
+  cycleStarDraw() {
+    const order = ['auto', 'base', 'loop', ...(this.renderer.multiDraw ? ['multi'] : [])];
+    const next = order[(order.indexOf(this.settings.starDraw) + 1) % order.length];
+    this.settings.starDraw = next;
+    this.saveSettings();
+    this.renderer.setStarDraw(next);
+    this.hud.toast(`Star draw path: ${next === 'auto' ? 'automatic' : this.renderer.starDraw.label}`, 2000);
   }
 
   toggleMenu(force) { return this.controls.toggleMenu(force); }

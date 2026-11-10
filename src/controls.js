@@ -122,6 +122,7 @@ export class Controls {
     bindCheck('#set-invert', 'invertPitch', (v) => { app.input.invertPitch = v; });
     bindCheck('#set-haptics', 'haptics', (v) => app.setHaptics(v));
     bindCheck('#set-stats', 'stats', (v) => { $('#stats').hidden = !v; });
+    $('#stats').addEventListener('click', () => app.cycleStarDraw());
     bindCheck('#set-lines', 'lines');
     bindCheck('#set-connames', 'conNames', (v) => app.hud.setConNames(v));
     bindCheck('#set-orbits', 'orbits');
