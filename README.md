@@ -87,7 +87,11 @@ naked-eye depth and the asteroid belt and the orbits fade in.
   plane, 60° apart, at no more than 15° a second; the autopilot starts that swing as it sets
   off, so the view has settled long before it arrives. The starfield keeps its full depth
   until the planets resolve and then thins over at least 2.5 seconds (about one magnitude a
-  second at most), so faint stars fade out one by one however fast you arrive.
+  second at most), so faint stars fade out one by one however fast you arrive. An orbit is
+  drawn while it reads as a ring: it fades in as it grows from a speck and out again once it is
+  several times larger than the view, and among a planet's moons the Sun's rings step back so
+  the scene is the planet and its moons' orbits. Sizes are measured against the view, not in
+  pixels, so nothing changes when the render resolution does.
 - **Clock:** the planets move in real time. In the menu, run the clock at up to a year per
   second, pause it, or go back to now (AD 1000–3000).
 

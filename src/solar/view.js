@@ -4,6 +4,7 @@
 // screen positions of the bodies for labels and tapping.
 import { OBLIQUITY_J2000, J2000 } from './astro.js';
 import { KM_PER_AU } from './ephemeris.js';
+import { logRamp } from './transition.js';
 
 const ATMOSPHERE = {
   earth: [[0.45, 0.65, 1.0], 0.9], venus: [[1.0, 0.94, 0.82], 0.6], mars: [[0.95, 0.65, 0.45], 0.25],
@@ -15,6 +16,29 @@ const SELECTED_ORBIT = [0.9, 0.82, 0.5];
 const cosE = Math.cos(OBLIQUITY_J2000), sinE = Math.sin(OBLIQUITY_J2000);
 const ECL_TO_EQ = new Float32Array([1, 0, 0, 0, cosE, sinE, 0, -sinE, cosE]); // column-major
 const smooth = (a, b, x) => { const t = Math.min(1, Math.max(0, (x - a) / (b - a))); return t * t * (3 - 2 * t); };
+
+// How large an orbit looks: its radius over half the shorter side of the view, so 1 is a
+// ring that just spans the screen, whatever the resolution it is drawn at. A ring fades in
+// as it grows from a speck, is drawn in full while it reads as a ring, and fades out again
+// once it is so much larger than the view that only near-straight arcs of it cross the
+// screen (flying among Jupiter's moons, Neptune's orbit is not a ring any more).
+const RING_IN = [0.055, 0.19];   // planets: 20 -> 70 px on a 720 px wide view
+const MOON_IN = [0.11, 0.31];    // moons: 40 -> 110 px
+const RING_FULL = 3;             // up to here in full ...
+const RING_GONE = 10;            // ... gone by here (smooth in log size)
+const BELT_IN = [0.11, 0.39];    // the asteroid belt (2.8 AU): 40 -> 140 px
+// Inside a planet's own system the scene is the planet and its moons: the Sun's rings step
+// back to this fraction, over the inner nine tenths of the planet's neighbourhood.
+const HOST_KEEP = 0.4;
+
+/**
+ * Opacity (0..1) of an orbit `rView` large (see above): `into` is RING_IN or MOON_IN. A
+ * selected ring is kept however large it gets.
+ */
+export function ringFade(rView, into, selected = false) {
+  const lower = smooth(into[0], into[1], rView);
+  return selected ? lower : lower * logRamp(rView, RING_GONE, RING_FULL); // 1 up to RING_FULL, 0 from RING_GONE
+}
 
 /**
  * Where a body (relative position x, y, z) sits along its orbit polyline: the fractional
@@ -100,10 +124,12 @@ export class SolarView {
     this.screen = [];
     const cam = c.camAU;
     const v = [0, 0, 0];
+    let host = 0; // how deep the camera is inside a planet's own system, 0..1
 
     for (const b of ss.bodies) {
       const rx = b.pos[0] - cam[0], ry = b.pos[1] - cam[1], rz = b.pos[2] - cam[2];
       const d = Math.hypot(rx, ry, rz);
+      if (b.region && b.type !== 'moon') host = Math.max(host, logRamp(d, b.region, b.region * 0.1));
       v[0] = V[0] * rx + V[3] * ry + V[6] * rz; v[1] = V[1] * rx + V[4] * ry + V[7] * rz; v[2] = V[2] * rx + V[5] * ry + V[8] * rz;
       const R = b.Req;
       const ang = Math.asin(Math.min(1, R / d));
@@ -184,16 +210,21 @@ export class SolarView {
     }
     f.bodies.sort((a, b) => b.dist - a.dist);
 
-    // orbits, faded in once they are big enough on screen to mean something
+    // orbits, shown while they are the right size on screen to read as rings
+    const short = Math.min(c.tanX, c.tanY);
+    f.host = host;
     if (c.orbits && c.s > 0.001) {
       for (const b of ss.bodies) {
         const o = ss.orbits.get(b.id);
         if (!o) continue;
         const parent = ss.get(b.parent);
         const pd = Math.hypot(parent.pos[0] - cam[0], parent.pos[1] - cam[1], parent.pos[2] - cam[2]);
-        const radiusPx = o.size / Math.max(pd, 1e-12) * fy;
+        const rView = o.size / Math.max(pd, 1e-12) / short;
         const moon = b.type === 'moon';
         const sel = c.selected === b.id;
+        let fade = ringFade(rView, moon ? MOON_IN : RING_IN, sel) * c.s;
+        if (fade < 0.01) continue;
+        if (!moon && !sel) fade *= 1 - (1 - HOST_KEEP) * host;
         // Seen edge-on (from near its plane, relative to its size) an orbit is just a line
         // along the ecliptic: dim it.
         const n = ringNormal(o.points);
@@ -201,9 +232,8 @@ export class SolarView {
         const hgt = Math.abs(ox * n[0] + oy * n[1] + oz * n[2]);
         const rho = Math.sqrt(Math.max(0, ox * ox + oy * oy + oz * oz - hgt * hgt));
         const open = hgt / (Math.hypot(hgt, Math.max(rho, o.size)) || 1);
-        const graze = 0.3 + 0.7 * smooth(0.02, 0.2, open);
-        const fade = smooth(moon ? 40 : 20, moon ? 110 : 70, radiusPx) * c.s * graze;
-        if (fade < 0.01) continue;
+        fade *= 0.3 + 0.7 * smooth(0.02, 0.2, open);
+        if (fade < 0.03) continue; // under 1 % opacity: not worth a draw
         const col = ORBIT_COLOUR[b.type] || ORBIT_COLOUR.planet;
         const os = this.orbitSlot(b.id);
         const fix = closestOnRing(o.points, b.pos[0] - parent.pos[0], b.pos[1] - parent.pos[1], b.pos[2] - parent.pos[2], os.fixBuf || (os.fixBuf = new Float32Array(3)));
@@ -219,9 +249,9 @@ export class SolarView {
 
     // asteroid belt
     const ds = Math.hypot(cam[0], cam[1], cam[2]);
-    const beltPx = 2.8 / Math.max(ds, 1e-9) * fy;
+    const beltView = 2.8 / Math.max(ds, 1e-9) / short;
     const belt = f.belt || (f.belt = { alpha: 0, sun: new Float32Array(3), days: 0, ecl: ECL_TO_EQ });
-    belt.alpha = 0.36 * c.s * smooth(40, 140, beltPx) * (c.orbits ? 1 : 0.6);
+    belt.alpha = 0.36 * c.s * smooth(BELT_IN[0], BELT_IN[1], beltView) * (c.orbits ? 1 : 0.6);
     belt.sun[0] = -cam[0]; belt.sun[1] = -cam[1]; belt.sun[2] = -cam[2];
     belt.days = ss.jdTT - J2000;
     return f;

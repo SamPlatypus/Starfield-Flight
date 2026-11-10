@@ -223,7 +223,6 @@ uniform mat3 uView;
 uniform vec2 uTan;
 uniform vec2 uRes;
 uniform float uPx;
-uniform float uNear;      // AU: lines fade out within this distance of the camera
 uniform vec3 uFix;        // body minus its mean-orbit point (AU): bends the line through the body
 uniform float uFixAt;     // where the body is along the ring, in segments
 uniform float uFixSpan;   // segments over which the bend fades out
@@ -232,7 +231,7 @@ in vec3 aP0;
 in vec3 aP1;
 out highp vec2 vLocal;
 flat out float vHalfW;
-flat out float vFade;
+out highp float vDist;    // AU from the camera, interpolated along the segment
 vec2 toPixels(vec3 p) { return (vec2(p.x / (-p.z * uTan.x), p.y / (-p.z * uTan.y)) * 0.5 + 0.5) * uRes; }
 float fixWeight(float k) { float d = abs(k - uFixAt); d = min(d, uSegments - d); return 1.0 - smoothstep(0.0, uFixSpan, d); }
 // Clips the view-space segment a-b to the view frustum widened by uTan * 1.5 and to the near
@@ -275,7 +274,9 @@ void main() {
   float ex = atB ? L : 0.0;
   vLocal = vec2(ex, side * ext);
   vHalfW = hw;
-  vFade = smoothstep(uNear * 0.3, uNear, min(length(a), length(b)));
+  // Segments share their end points, so the distance (and with it the fade of a line that
+  // passes close to the camera) runs on smoothly from one segment to the next.
+  vDist = atB ? length(b) : length(a);
   gl_Position = vec4((A + u * ex + n * side * ext) / uRes * 2.0 - 1.0, 0.0, 1.0);
 }
 `;
@@ -284,13 +285,14 @@ const ORBIT_FS = `#version 300 es
 precision highp float;
 uniform vec3 uColour;
 uniform float uAlpha;
+uniform float uNear;      // AU: lines fade out within this distance of the camera
 in highp vec2 vLocal;
 flat in float vHalfW;
-flat in float vFade;
+in highp float vDist;
 out vec4 outColour;
 void main() {
   float edge = 1.0 - smoothstep(vHalfW - 0.4, vHalfW + 0.9, abs(vLocal.y));
-  outColour = vec4(uColour * uAlpha * edge * vFade, 1.0);
+  outColour = vec4(uColour * uAlpha * edge * smoothstep(uNear * 0.3, uNear, vDist), 1.0);
 }
 `;
 

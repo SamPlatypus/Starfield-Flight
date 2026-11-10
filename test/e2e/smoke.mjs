@@ -615,6 +615,12 @@ await check('the autopilot flies from the stars to Jupiter with it centred, park
   });
   const d0 = await dist();
   assert.ok(Math.abs(d0 / 4.5 - 1) < 0.03, `parked ${d0.toFixed(2)} Jupiter radii out`);
+  // here the scene is Jupiter and its moons: the Sun's rings have stepped back and the huge ones are gone
+  const rings = await app(page, () => { const f = window.starfield.solarView.frame; return { host: f.host, alpha: Object.fromEntries(f.orbits.map((o) => [o.id, o.alpha])) }; });
+  const ink = Object.values(rings.alpha).reduce((a, b) => a + b, 0);
+  assert.equal(rings.host, 1, 'deep in Jupiter\'s own system');
+  assert.ok(rings.alpha.io > 0.15 && !('neptune' in rings.alpha) && !('pluto' in rings.alpha), `rings drawn: ${Object.keys(rings.alpha).join(' ')}`);
+  assert.ok(ink < 1.2, `total ring opacity ${ink.toFixed(2)} (every ring in full would be about 2.2)`);
   assert.match(await page.locator('#toast').textContent(), /Arrived: Jupiter/);
   // a month per second: Jupiter moves ~0.3 AU/s, the ship moves with it
   const jd0 = await app(page, () => window.starfield.solar.jdUT);

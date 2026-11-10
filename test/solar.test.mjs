@@ -125,3 +125,95 @@ test('the Solar System view: discs, points, ring extents and orbits for one fram
   assert.ok(f.belt.alpha >= 0 && f.belt.days > 9000);
   void AU_PER_PC;
 });
+
+test('orbits show while they read as rings: in from a speck, out again when far larger than the view', async () => {
+  const { SolarSystem, ECLIPTIC_NORTH } = await import('../src/solar/system.js');
+  const { SolarView, ringFade } = await import('../src/solar/view.js');
+  const { quat, transpose3 } = await import('../src/math.js');
+  const PLANET = [0.055, 0.19], MOON = [0.11, 0.31];
+
+  // the fade itself: 0 for a speck, 1 while it reads as a ring, 0 again when huge
+  assert.equal(ringFade(0.05, PLANET), 0);
+  assert.equal(ringFade(0.2, PLANET), 1);
+  assert.equal(ringFade(3, PLANET), 1);
+  assert.equal(ringFade(10, PLANET), 0);
+  assert.equal(ringFade(40, PLANET), 0);
+  assert.equal(ringFade(40, PLANET, true), 1, 'a selected ring is kept however large');
+  assert.equal(ringFade(0.15, MOON) < ringFade(0.15, PLANET), true, 'moon orbits come in later');
+  let prev = 0, peaked = false;
+  for (let r = 0.03; r < 15; r *= 1.05) {
+    const v = ringFade(r, PLANET);
+    assert.ok(Math.abs(v - prev) < 0.12, `no jump at ${r.toFixed(2)}`);
+    if (v < prev) peaked = true;
+    assert.ok(peaked ? v <= prev + 1e-12 : v >= prev, 'rises once, then falls once');
+    prev = v;
+  }
+
+  const ss = new SolarSystem();
+  ss.update(2461354.6);
+  const sv = new SolarView(ss);
+  const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+  const frame = (cam, lookAt, opts = {}) => {
+    const camToWorld = quat.toMat3(quat.lookRotation(sub(lookAt, cam), ECLIPTIC_NORTH), new Float32Array(9));
+    const f = sv.build({ camAU: cam, view: transpose3(camToWorld, new Float32Array(9)), camToWorld, tanX: 0.6494, tanY: 1.4431, w: 720, h: 1600,
+      dpr: 2, px: 1.56, magLimit: 7, gain: 1, s: 1, orbits: true, selected: null, ...opts });
+    return { alpha: Object.fromEntries(f.orbits.map((o) => [o.id, o.alpha])), host: f.host, belt: f.belt.alpha };
+  };
+  const up = (au, elevDeg) => { // a point `au` from the Sun, `elevDeg` above the planets' plane
+    const e = elevDeg * Math.PI / 180, n = ECLIPTIC_NORTH;
+    return [Math.cos(e) * au + n[0] * Math.sin(e) * au, n[1] * Math.sin(e) * au, n[2] * Math.sin(e) * au];
+  };
+
+  // 5,000 AU out: nothing yet. 400 AU: the outer planets' rings are coming in, the inner ones are specks.
+  assert.deepEqual(frame(up(5000, 35), [0, 0, 0]).alpha, {});
+  const far = frame(up(400, 35), [0, 0, 0]);
+  assert.ok(far.alpha.neptune > 0.05 && far.alpha.neptune < 0.38 && far.alpha.pluto > far.alpha.neptune, 'outer rings fading in');
+  assert.ok(!('earth' in far.alpha) && !('io' in far.alpha), 'inner rings and moons are still specks');
+  assert.equal(far.belt, 0);
+
+  // Home, 6 AU out: the rings from Earth's to Saturn's in full, Mercury's still small, Neptune's
+  // and Pluto's too large to read
+  const home = frame(up(6, 35), [0, 0, 0]);
+  for (const id of ['earth', 'mars', 'jupiter', 'saturn']) assert.ok(Math.abs(home.alpha[id] - 0.38) < 1e-6, `${id} ring in full at home (${home.alpha[id]})`);
+  assert.ok(home.alpha.mercury > 0.03 && home.alpha.mercury < home.alpha.venus && home.alpha.venus <= 0.38, 'the innermost rings are still coming in');
+  assert.ok(home.alpha.uranus > 0.1 && home.alpha.uranus < 0.3, `Uranus fading out (${home.alpha.uranus})`);
+  assert.ok((home.alpha.neptune ?? 0) < 0.06 && !('pluto' in home.alpha), 'Neptune and Pluto all but gone');
+  assert.equal(home.host, 0);
+  assert.ok(home.belt > 0.3, 'the belt shows');
+
+  // Parked 4.5 radii from Jupiter, inside all its moons' orbits
+  const j = ss.get('jupiter');
+  const park = sub(j.pos, j.pos.map((x) => x * 4.5 * j.Req / Math.hypot(...j.pos))).map((x, i) => x + ECLIPTIC_NORTH[i] * 1.5 * j.Req);
+  const atJ = frame(park, j.pos);
+  assert.equal(atJ.host, 1, 'deep in Jupiter\'s own system');
+  assert.ok(atJ.alpha.io > 0.2 && atJ.alpha.europa > 0.15, 'the inner moons\' orbits read as rings');
+  assert.ok(!('callisto' in atJ.alpha) || atJ.alpha.callisto < 0.05, 'Callisto\'s is far larger than the view');
+  assert.ok(!('neptune' in atJ.alpha) && !('pluto' in atJ.alpha), 'so are Neptune\'s and Pluto\'s');
+  for (const id of ['mercury', 'venus', 'earth', 'mars', 'jupiter', 'saturn']) {
+    if (id in atJ.alpha) assert.ok(atJ.alpha[id] <= 0.38 * 0.4 + 1e-6, `the Sun's rings step back at a planet: ${id} ${atJ.alpha[id].toFixed(3)}`);
+  }
+  // all told far less line on screen than every ring in full (4 moons at 0.3 + 9 edge-on rings at 0.11 = 2.2)
+  const ink = Object.values(atJ.alpha).reduce((a, b) => a + b, 0);
+  assert.ok(ink > 0.5 && ink < 1.1, `total ring opacity at Jupiter ${ink.toFixed(2)}`);
+  assert.ok(Object.values(atJ.alpha).every((a) => a >= 0.03 * 0.3 - 1e-9), 'nothing is drawn too faint to see');
+  // selecting one brings it back in full, however large
+  const sel = frame(park, j.pos, { selected: 'neptune' });
+  assert.ok(sel.alpha.neptune > 0.15, `a selected ring shows (${sel.alpha.neptune})`);
+
+  // crossing into Jupiter's neighbourhood nothing jumps: the step back starts from nothing at its edge
+  const out = (k) => j.pos.map((x, i) => x + ECLIPTIC_NORTH[i] * j.region * k);
+  assert.equal(frame(out(1.2), j.pos).host, 0);
+  assert.equal(frame(out(1.0), j.pos).host, 0);
+  assert.ok(frame(out(0.9), j.pos).host < 0.02 && frame(out(0.5), j.pos).host > 0.1);
+
+  // the same view at a lower render resolution shows the same rings
+  const lo = (() => {
+    const cam = up(6, 35), camToWorld = quat.toMat3(quat.lookRotation(sub([0, 0, 0], cam), ECLIPTIC_NORTH), new Float32Array(9));
+    const f = sv.build({ camAU: cam, view: transpose3(camToWorld, new Float32Array(9)), camToWorld, tanX: 0.6494, tanY: 1.4431, w: 396, h: 880,
+      dpr: 1.1, px: 1, magLimit: 7, gain: 1, s: 1, orbits: true, selected: null });
+    return { alpha: Object.fromEntries(f.orbits.map((o) => [o.id, o.alpha])), belt: f.belt.alpha };
+  })();
+  assert.deepEqual(Object.keys(lo.alpha).sort(), Object.keys(home.alpha).sort());
+  for (const id of Object.keys(lo.alpha)) assert.ok(Math.abs(lo.alpha[id] - home.alpha[id]) < 1e-9, `${id} unchanged by the render scale`);
+  assert.ok(Math.abs(lo.belt - home.belt) < 1e-9);
+});
