@@ -5,6 +5,11 @@
 // here uses absolute thresholds: the throttle is scaled by `speedScale` (the app lowers it
 // inside the Solar System), the autopilot cruises at a speed set by the trip length and
 // arrives on a logarithmic tail, and arrival is judged relative to the parking distance.
+//
+// Under manual control the ship flies where it looks. The autopilot separates the two when
+// its target has something to look at (`face` / `locateFace`): the view stays on that
+// subject for the whole trip while the ship travels to the viewpoint beside it, so it
+// slides into place with the subject centred instead of stopping and then turning to it.
 import { quat, v3, clamp, ease, GALACTIC_NORTH } from './math.js';
 
 export const SPEED_MIN = 0.003;   // pc/s at the bottom of the throttle (~0.01 ly/s)
@@ -16,6 +21,9 @@ const ROLL_RATE = 1.6;            // rad/s
 const AIM_GAIN = 2.4;             // 1/s, turn-to-target proportional gain
 const SOL_STOP = 0.0153;          // pc: legacy parking distance when no parking point is given
 const TAIL = 0.55;                // s: the last stretch of every autopilot trip closes by e each TAIL
+const LOOK_RATE_MAX = 2;          // rad/s: fastest the view follows a subject sliding past
+const SLIDE_RATE = 0.5;           // rad/s: a slide round the subject is paced to turn the view no faster
+const LOCK_ALIGN = 0.98;          // alignment (0..1) at which the view counts as on its subject
 
 export function throttleToSpeed(t) {
   if (t <= THROTTLE_DEAD) return 0;
@@ -53,6 +61,8 @@ export class Ship {
     this.lastManualRoll = -1e9;
     this.time = 0;
     this.events = [];
+    this.heading = [0, 0, -1]; // unit direction of travel (world); the view direction except on autopilot
+    this.lookPrev = null;      // where the autopilot's subject was last frame (unit, world)
   }
 
   get forward() { return quat.rotate(this.q, [0, 0, -1]); }
@@ -69,18 +79,19 @@ export class Ship {
   setTarget(target, autopilot = false) {
     this.target = target;
     this.autopilot = autopilot && !!target && target.kind !== 'dir';
+    this.lookPrev = null;
   }
 
   /**
-   * Fly home. With a parking point (pc) the ship parks there facing the Sun; without one it
-   * stops SOL_STOP short of the Sun on its current line of approach.
+   * Fly home. With a parking point (pc) the ship travels there with the Sun held in view;
+   * without one it stops SOL_STOP short of the Sun on its current line of approach.
    */
   goHome(park = null) {
     if (park) this.setTarget({ kind: 'point', pos: park, face: [0, 0, 0], name: 'Sol', home: true, stop: 0, arrive: 1e-7 }, true);
     else this.setTarget({ kind: 'point', pos: [0, 0, 0], name: 'Sol', home: true, stop: SOL_STOP }, true);
   }
 
-  cancelTarget() { this.target = null; this.autopilot = false; }
+  cancelTarget() { this.target = null; this.autopilot = false; this.lookPrev = null; }
 
   /** Direction (world) and distance to the current target; moving targets are re-located. */
   aim(positionOf) {
@@ -105,8 +116,15 @@ export class Ship {
     let wy = -TURN_RATE * curve(this.steer[0]);
     let alignCos = 1;
     const aim = this.aim(positionOf);
-    if (aim) {
-      const local = quat.rotate(quat.conj(this.q), aim.dir);  // target in camera axes
+    // Where to look: at the target, or on autopilot at the subject it is being flown to see.
+    let look = aim ? aim.dir : null, subject = null;
+    if (aim && this.autopilot) {
+      const t = this.target, p = t.locateFace ? t.locateFace() : t.face;
+      const d = p ? v3.sub(p, this.pos) : null, l = d ? v3.len(d) : 0;
+      if (l > 0) { look = v3.scale(d, 1 / l); subject = p; }
+    }
+    if (look) {
+      const local = quat.rotate(quat.conj(this.q), look);  // in camera axes
       alignCos = clamp(-local[2], -1, 1);
       const angle = Math.acos(alignCos);
       // rotation axis taking -z onto `local`: (-z) x local = (local.y, -local.x, 0)
@@ -117,6 +135,17 @@ export class Ship {
         wy = (ay / al) * rate;
       } else if (alignCos < 0) {
         wy = TURN_RATE; // directly behind: pick a side
+      }
+      if (subject) {
+        // The subject drifts across the view as the ship slides past it: turn with it, so
+        // the proportional term above only has the remaining error to close.
+        if (this.lookPrev && dt > 0) {
+          const w = quat.rotate(quat.conj(this.q), v3.scale(v3.cross(this.lookPrev, look), 1 / dt));
+          const rate = Math.hypot(w[0], w[1]), k = rate > LOOK_RATE_MAX ? LOOK_RATE_MAX / rate : 1;
+          wx += w[0] * k;
+          wy += w[1] * k;
+        }
+        this.lookPrev = look;
       }
       if (this.target.kind === 'dir' && angle < 0.004) this.cancelTarget();
     }
@@ -138,7 +167,8 @@ export class Ship {
     // ---- speed
     this.boost += ((this.boostHeld ? 1 : 0) - this.boost) * ease(dt, this.boostHeld ? 0.35 : 0.6);
     let want = this.targetSpeed;
-    let braking = false;
+    let limit = Infinity;   // the autopilot's braking curve: never exceeded, so it cannot overshoot
+    let steer = 0;          // 0: travelling where the ship looks, 1: straight at the parking point
     if (this.autopilot && aim) {
       const t = this.target;
       const remaining = aim.dist - (t.stop || 0);
@@ -154,39 +184,61 @@ export class Ship {
       const cruise = t.cruise * this.boostFactor;
       const r = Math.max(remaining, 0);
       const align = clamp((alignCos - 0.94) / (1 - 0.94), 0, 1) ** 2;
-      want = Math.min(cruise, Math.sqrt(2 * decel * r), r / TAIL) * align;
-      want = Math.min(want, (0.85 * r) / Math.max(dt, 1 / 240)); // never step past the parking point
-      braking = want < this.speed;
+      // Sliding round the subject by an angle a turns the view at up to tan(a / 2) / (2 tail):
+      // a wide slide gets a longer tail so that stays a glide.
+      let tail = TAIL;
+      if (subject) {
+        const s = v3.sub(subject, t.pos), sl = v3.len(s);
+        const c = sl > 0 ? clamp(v3.dot(aim.dir, s) / sl, -1, 1) : 1;
+        tail = clamp(Math.sqrt((1 - c) / (1 + c + 1e-9)) / (2 * SLIDE_RATE), TAIL, 3 * TAIL);
+      }
+      limit = Math.min(cruise, Math.sqrt(2 * decel * r), r / tail);
+      limit = Math.min(limit, (0.85 * r) / Math.max(dt, 1 / 240)); // never step past the parking point
+      want = limit * align;
+      if (subject) {
+        // Until the view is on the subject the ship keeps going where it looks; from then
+        // on it heads for the parking point however far that is from the line of sight.
+        if (align >= LOCK_ALIGN) t.locked = true;
+        steer = t.locked ? 1 : align;
+      }
       if (remaining < t.arrive) {
         this.events.push({ type: 'arrived', target: t });
         this.speed = 0;
         this.throttle = 0;
-        // Parked: finish turning to what we came to see.
-        const look = t.locateFace ? t.locateFace() : t.face;
-        const face = look ? v3.sub(look, this.pos) : aim.dir;
+        // Parked: hold the view on what we came to see (it is already there after a slide).
+        const p = t.locateFace ? t.locateFace() : t.face;
+        const face = p ? v3.sub(p, this.pos) : aim.dir;
         const fl = v3.len(face);
         this.setTarget({ kind: 'dir', dir: fl > 0 ? v3.scale(face, 1 / fl) : this.forward });
         want = 0;
-        braking = false;
+        limit = 0;
       }
     }
-    if (braking) {
-      this.speed = want; // the braking curve is already smooth; lagging it would overshoot
-    } else if (want <= 0) {
+    if (this.speed > limit) this.speed = limit; // the braking curve is already smooth; lagging it would overshoot
+    if (want <= 0) {
       this.speed *= Math.exp(-dt / 0.35);
       if (this.speed < 1e-16) this.speed = 0;
-    } else {
+    } else if (want !== this.speed) {
+      // Eases towards the wanted speed in log space, up or down: a ship still turning onto
+      // its target sheds its old speed over a moment instead of stopping dead.
       const from = Math.max(this.speed, want * 0.02);
       const tau = this.autopilot ? 0.35 : this.boostHeld ? 0.3 : 0.55;
-      this.speed = Math.exp(Math.log(from) + (Math.log(want) - Math.log(from)) * ease(dt, tau));
+      this.speed = Math.min(limit, Math.exp(Math.log(from) + (Math.log(want) - Math.log(from)) * ease(dt, tau)));
     }
     // Near the Sun the ship drops out of warp rather than coasting through the planets.
     if (!this.autopilot && this.speed > this.speedCap) this.speed = this.speedCap;
 
     // ---- position (float64)
-    const f = this.forward;
+    let h = this.forward;
+    if (steer > 0 && aim) {
+      const d = aim.dir, k = 1 - steer;
+      const m = [h[0] * k + d[0] * steer, h[1] * k + d[1] * steer, h[2] * k + d[2] * steer];
+      const ml = v3.len(m);
+      h = ml > 1e-6 ? v3.scale(m, 1 / ml) : d;
+    }
+    this.heading = h;
     const step = this.speed * dt;
-    this.pos[0] += f[0] * step; this.pos[1] += f[1] * step; this.pos[2] += f[2] * step;
+    this.pos[0] += h[0] * step; this.pos[1] += h[1] * step; this.pos[2] += h[2] * step;
   }
 
   /** Orientation `tau` seconds ago, extrapolated from the current angular velocity. */

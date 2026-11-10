@@ -127,15 +127,17 @@ test('bodies, co-moving neighbourhoods, collisions and the home parking spot', (
   assert.ok(ss.keepOutside(p));
   const r = Math.hypot(p[0] - jupiter.pos[0], p[1] - jupiter.pos[1], p[2] - jupiter.pos[2]);
   assert.ok(Math.abs(r / jupiter.Req - 1.02) < 1e-6);
-  // Home: 6 AU from the Sun, 60 degrees (5.2 AU) above the ecliptic, on the approach side.
-  const from = [400000, -300000, 1000];
-  const park = ss.homeParking(from);
-  const d = Math.hypot(...park);
-  assert.ok(Math.abs(d - 6) < 1e-9);
-  const el = Math.asin((park[0] * ECLIPTIC_NORTH[0] + park[1] * ECLIPTIC_NORTH[1] + park[2] * ECLIPTIC_NORTH[2]) / d) * 180 / Math.PI;
-  assert.ok(Math.abs(el - 60) < 1e-6, `elevation ${el}`);
-  assert.ok(d * Math.sin(el * Math.PI / 180) > 5, 'more than 5 AU above the plane');
-  assert.ok(park[0] * from[0] + park[1] * from[1] + park[2] * from[2] > 0, 'parks on the side the ship comes from');
+  // Home: 6 AU from the Sun on the line of approach, lifted to 25 degrees when that line
+  // lies near the planets' plane (test/flight.test.mjs covers the whole range).
+  const elevOf = (p) => Math.asin((p[0] * ECLIPTIC_NORTH[0] + p[1] * ECLIPTIC_NORTH[1] + p[2] * ECLIPTIC_NORTH[2]) / Math.hypot(...p)) * 180 / Math.PI;
+  const steep = [400000, -300000, 400000];
+  const onLine = ss.homeParking(steep);
+  assert.ok(Math.abs(Math.hypot(...onLine) - 6) < 1e-9);
+  assert.ok(elevOf(steep) > 33 && Math.abs(elevOf(onLine) - elevOf(steep)) < 1e-9, 'a steep approach parks on its own line');
+  const flat = [400000, -300000 * Math.cos(23.4392911 * Math.PI / 180), -300000 * Math.sin(23.4392911 * Math.PI / 180)];
+  const lifted = ss.homeParking(flat);
+  assert.ok(Math.abs(elevOf(flat)) < 1e-6 && Math.abs(elevOf(lifted) - 25) < 1e-6, `an approach in the plane is lifted to ${elevOf(lifted)} deg`);
+  assert.ok(lifted[0] * flat[0] + lifted[1] * flat[1] + lifted[2] * flat[2] > 0, 'on the side the ship comes from');
   void AU_PER_PC;
 });
 

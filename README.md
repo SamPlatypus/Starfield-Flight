@@ -41,7 +41,7 @@ with no connection. The same menu has a **Download Android APK** button.
 | Twist two fingers | Roll |
 | Speed slider (left) | Throttle, from all stop to ~200 light-years per second (logarithmic) |
 | Density slider (right) | How faint a star you can see: limiting magnitude 4.5 (sparse) to 10.5 (dense) |
-| Tap the **SOL** marker | Autopilot home: turns, accelerates, and parks 6 AU from the Sun, 5 AU above the planets' plane, looking down on the inner Solar System |
+| Tap the **SOL** marker | Autopilot home: turns to the Sun, accelerates, and parks 6 AU from it on your own line of approach, the Sun in the middle of the view all the way (an approach near the planets' plane is lifted to 25° above or below it, so the orbits open out) |
 | 🔍 | **Search** stars and planets: *Sirius*, *Alpha Centauri*, *α Cen*, *alf CMa*, *61 Cyg*, *HR 7001*, *Gliese 581*, *Jupiter*, *Titan*… (typos like *Betelguese* are forgiven); pick one to turn to it and open its card |
 | Menu → Favourites | Your saved stars and planets with their distance from you, updated live: tap to fly there, ✎ to rename, × to remove (up to 100) |
 | Menu (⋯) | Fly home, search, favourites, jump to a random star, all stop, hide controls, motion blur, Milky Way, field of view, star and planet names, constellation lines and names, orbits, the Solar System clock, install |
@@ -74,7 +74,9 @@ back to about naked-eye depth and the planets, the asteroid belt and the orbits 
   throttle crosses to it in about 7 seconds, and arriving at warp the ship drops out of warp at
   the edge of the Solar System instead of flashing through it. Near a planet or moon you move
   with it. **Fly here** parks on a body's sunlit side (as far as the approach allows) and keeps
-  pace with it as it moves; you can't fly into anything.
+  pace with it as it moves; you can't fly into anything. The autopilot looks at where it is
+  going to stop and look, not at where it is going: the planet stays in the middle of the view
+  while the ship slides round to its sunlit side, and nothing turns once it has stopped.
 - **Clock:** the planets move in real time. In the menu, run the clock at up to a year per
   second, pause it, or go back to now (AD 1000–3000).
 

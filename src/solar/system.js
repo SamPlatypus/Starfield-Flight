@@ -50,7 +50,9 @@ const PARK_MAX_TURN = 75 * DEG;       // from the line of approach: the path nev
  * Unit vector from a body (heliocentric AU) to where the autopilot parks by it, for a ship
  * at `shipAU`: on the sunlit side at a phase angle of ~35 degrees, a little above the
  * ecliptic, as far as staying within 75 degrees of the line of approach allows (then the
- * straight path in never comes closer to the body than the parking distance).
+ * straight path in never comes closer to the body than the parking distance). The ship
+ * keeps the body in the middle of its view the whole way, so the turn off the line of
+ * approach is seen as a slide around the body, not as a turn of the camera.
  */
 export function parkingSide(bodyAU, shipAU) {
   const u = unit([shipAU[0] - bodyAU[0], shipAU[1] - bodyAU[1], shipAU[2] - bodyAU[2]]); // body -> ship
@@ -147,20 +149,26 @@ export class SolarSystem {
   }
 
   /**
-   * Where "fly home" parks: `distAU` from the Sun, `elevDeg` above the ecliptic (6 AU at 60
-   * degrees is 5.2 AU above the plane), on the side the ship is coming from, so the approach
-   * never crosses the planets' orbits head-on and the inner planets spread out around the Sun.
+   * Where "fly home" parks: `distAU` from the Sun on the ship's own line of approach, so the
+   * Sun never leaves the middle of the view. Only an approach close to the planets' plane,
+   * where the orbits would be seen edge-on, is lifted: to at least `minElevDeg` above (or
+   * below) the ecliptic, on whichever side the ship is already on, easing into the plain
+   * line of approach over `kneeDeg` either side of that floor.
    */
-  homeParking(shipAU, distAU = 6, elevDeg = 60) {
+  homeParking(shipAU, distAU = 6, minElevDeg = 25, kneeDeg = 8) {
     const n = ECLIPTIC_NORTH;
-    const l = Math.hypot(shipAU[0], shipAU[1], shipAU[2]) || 1;
+    const l = Math.hypot(shipAU[0], shipAU[1], shipAU[2]);
+    if (!(l > 0)) return [n[0] * distAU, n[1] * distAU, n[2] * distAU]; // at the Sun itself: straight up
     const u = [shipAU[0] / l, shipAU[1] / l, shipAU[2] / l];
-    const along = u[0] * n[0] + u[1] * n[1] + u[2] * n[2];
-    let h = [u[0] - along * n[0], u[1] - along * n[1], u[2] - along * n[2]];
-    let hl = Math.hypot(h[0], h[1], h[2]);
-    if (hl < 0.05) { h = [1, 0, 0]; hl = 1; } // arriving over a pole: any direction will do
-    const c = Math.cos(elevDeg * DEG), s = Math.sin(elevDeg * DEG);
-    return [(h[0] / hl * c + n[0] * s) * distAU, (h[1] / hl * c + n[1] * s) * distAU, (h[2] / hl * c + n[2] * s) * distAU];
+    const along = Math.min(1, Math.max(-1, u[0] * n[0] + u[1] * n[1] + u[2] * n[2]));
+    const elev = Math.abs(Math.asin(along)) / DEG;
+    if (elev >= minElevDeg + kneeDeg) return [u[0] * distAU, u[1] * distAU, u[2] * distAU];
+    const lifted = elev <= minElevDeg - kneeDeg ? minElevDeg : elev + (minElevDeg + kneeDeg - elev) ** 2 / (4 * kneeDeg);
+    // same compass direction from the Sun, at the lifted elevation
+    const h = [u[0] - along * n[0], u[1] - along * n[1], u[2] - along * n[2]];
+    const hl = Math.hypot(h[0], h[1], h[2]);
+    const c = Math.cos(lifted * DEG) / hl, sn = Math.sin(lifted * DEG) * (along < -1e-9 ? -1 : 1); // dead level: north
+    return [(h[0] * c + n[0] * sn) * distAU, (h[1] * c + n[1] * sn) * distAU, (h[2] * c + n[2] * sn) * distAU];
   }
 
   /** Apparent magnitude of a body seen from `au`. */

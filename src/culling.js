@@ -41,20 +41,20 @@ export class Culler {
    * @param planes    Float64Array of unit normals (world frame) of planes through the camera;
    *                  a point p is inside when dot(n, p - cam) >= 0
    * @param planeCount number of planes in `planes`
-   * @param forward   unit view direction
+   * @param travel    unit direction of travel (the view direction, except on autopilot)
    * @param sweep     how far (pc) behind its current position a star's streak tail can be
    * @param magLimit  faintest apparent magnitude drawn
    */
-  collect(cam, planes, planeCount, forward, sweep, magLimit) {
+  collect(cam, planes, planeCount, travel, sweep, magLimit) {
     const { nodeBounds: B, nodeLinks: L, bands } = this.cat;
     this.rangeCount = 0;
     this.nodesVisited = 0;
     this.starsSubmitted = 0;
     const cx = cam[0], cy = cam[1], cz = cam[2];
-    // Per-plane extra reach of the swept boxes: tails sit at +forward * sweep.
+    // Per-plane extra reach of the swept boxes: tails sit at +travel * sweep.
     const reach = new Float64Array(planeCount);
     for (let p = 0; p < planeCount; p++) {
-      const nf = planes[p * 3] * forward[0] + planes[p * 3 + 1] * forward[1] + planes[p * 3 + 2] * forward[2];
+      const nf = planes[p * 3] * travel[0] + planes[p * 3 + 1] * travel[1] + planes[p * 3 + 2] * travel[2];
       reach[p] = Math.max(0, sweep * nf);
     }
     let stack = this.stack;

@@ -314,29 +314,90 @@ await check('tapping a star selects it, shows facts and turns towards it', async
 
 const AU_PER_PC = 206264.80624709636;
 
-await check('tapping the Sol marker flies home and parks above the ecliptic, facing the Sun', async () => {
+/**
+ * Watches an autopilot trip frame by frame in the page: how far the subject strays from the
+ * middle of the view once the view is on it, and how far the view turns after the ship stops.
+ */
+const watchTrip = (page, subjectId) => app(page, (id) => {
+  const a = window.starfield, AU = 206264.80624709636;
+  const w = (window.trip = { offCentre: 0, turnAfter: 0, stopped: null, frames: 0 });
+  const tgt = a.ship.target;
+  const tick = () => {
+    const s = a.ship, b = id ? a.solar.get(id).pos.map((x) => x / AU) : [0, 0, 0];
+    const to = [b[0] - s.pos[0], b[1] - s.pos[1], b[2] - s.pos[2]], l = Math.hypot(...to), f = s.forward;
+    const off = Math.acos(Math.min(1, (f[0] * to[0] + f[1] * to[1] + f[2] * to[2]) / l)) * 180 / Math.PI;
+    if (s.autopilot && tgt.locked) { w.offCentre = Math.max(w.offCentre, off); w.frames++; }
+    if (!s.autopilot) {
+      if (!w.stopped) w.stopped = f;
+      w.turnAfter = Math.max(w.turnAfter, Math.acos(Math.min(1, f[0] * w.stopped[0] + f[1] * w.stopped[1] + f[2] * w.stopped[2])) * 180 / Math.PI);
+    }
+    if (!w.done) requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+}, subjectId);
+const tripResult = (page) => app(page, () => { window.trip.done = true; return window.trip; });
+
+await check('tapping the Sol marker flies home along the line of approach, the Sun centred all the way', async () => {
   const { ctx, page } = await newPage(browser);
   await app(page, () => { const a = window.starfield; a.ship.pos = [12, -30, 8]; a.ship.lookAlong([1, 0, 0]); a.setThrottle(0); });
   await page.waitForTimeout(600);
   const box = await page.locator('#sol').boundingBox();
   await page.touchscreen.tap(box.x + box.width / 2, box.y + box.height / 2);
   assert.equal(await app(page, () => window.starfield.ship.autopilot && window.starfield.ship.target.home), true);
+  await watchTrip(page, null);
   await page.waitForFunction(() => !window.starfield.ship.autopilot, null, { timeout: 60000 });
-  await page.waitForTimeout(1500); // finishes turning to the Sun
+  await page.waitForTimeout(1500);
+  const trip = await tripResult(page);
   const r = await app(page, () => {
     const a = window.starfield, p = a.ship.pos, d = Math.hypot(...p), f = a.ship.forward;
     const n = [0, -Math.sin(23.4392911 * Math.PI / 180), Math.cos(23.4392911 * Math.PI / 180)];
-    return { d, elev: Math.asin((p[0] * n[0] + p[1] * n[1] + p[2] * n[2]) / d) * 180 / Math.PI, facing: -(f[0] * p[0] + f[1] * p[1] + f[2] * p[2]) / d, s: a.solarS };
+    const from = [12, -30, 8], fl = Math.hypot(...from);
+    return { d, elev: Math.asin((p[0] * n[0] + p[1] * n[1] + p[2] * n[2]) / d) * 180 / Math.PI, facing: -(f[0] * p[0] + f[1] * p[1] + f[2] * p[2]) / d, s: a.solarS,
+      offLine: Math.acos(Math.min(1, (p[0] * from[0] + p[1] * from[1] + p[2] * from[2]) / (d * fl))) * 180 / Math.PI };
   });
   const au = r.d * AU_PER_PC;
   assert.ok(Math.abs(au - 6) < 0.15, `parked ${au.toFixed(2)} AU from the Sun`);
-  assert.ok(Math.abs(r.elev - 60) < 1 && au * Math.sin(r.elev * Math.PI / 180) > 5, `elevation ${r.elev.toFixed(1)} deg`);
-  assert.ok(r.facing > 0.999, 'facing the Sun');
+  // this approach comes in 35 degrees above the planets' plane: steep enough to park on its own line
+  assert.ok(r.offLine < 0.5 && Math.abs(r.elev - 35.4) < 0.5, `${r.offLine.toFixed(2)} deg off the line of approach, elevation ${r.elev.toFixed(1)} deg`);
+  assert.ok(r.facing > 0.9999, 'facing the Sun');
+  assert.ok(trip.frames > 20 && trip.offCentre < 3, `the Sun stayed within ${trip.offCentre.toFixed(2)} deg of the centre`);
+  assert.ok(trip.turnAfter < 0.5, `turned ${trip.turnAfter.toFixed(2)} deg after stopping`);
   assert.equal(r.s, 1, 'in Solar System mode');
   assert.match(await page.locator('#toast').textContent(), /Home/);
   assert.match(await page.locator('#readout .sol-dist').textContent(), /AU/);
   assert.ok(await page.locator('#labels .label.body.on').count() >= 2, 'planets are labelled');
   await shot(page, 'home');
+  // Asking again from here is a no-op.
+  await app(page, () => window.starfield.home());
+  assert.equal(await app(page, () => window.starfield.ship.autopilot), false, 'already home');
+  assert.deepEqual(page.errors, []);
+  await ctx.close();
+});
+
+await check('flying home from the planets\' plane climbs to 25 degrees with the Sun still centred', async () => {
+  const { ctx, page } = await newPage(browser);
+  // 300 AU out, in the ecliptic, looking away
+  await app(page, () => {
+    const a = window.starfield, e = 23.4392911 * Math.PI / 180, AU = 206264.80624709636;
+    a.ship.pos = [0, 300 * Math.cos(e) / AU, 300 * Math.sin(e) / AU];
+    a.ship.lookAlong([1, 0, 0]);
+    a.setThrottle(0);
+  });
+  await page.waitForTimeout(300);
+  await app(page, () => window.starfield.home());
+  await watchTrip(page, null);
+  await page.waitForFunction(() => !window.starfield.ship.autopilot, null, { timeout: 60000 });
+  await page.waitForTimeout(1000);
+  const trip = await tripResult(page);
+  const r = await app(page, () => {
+    const p = window.starfield.ship.pos, d = Math.hypot(...p);
+    const n = [0, -Math.sin(23.4392911 * Math.PI / 180), Math.cos(23.4392911 * Math.PI / 180)];
+    return { au: d * 206264.80624709636, elev: Math.asin((p[0] * n[0] + p[1] * n[1] + p[2] * n[2]) / d) * 180 / Math.PI };
+  });
+  assert.ok(Math.abs(r.au - 6) < 0.15 && Math.abs(r.elev - 25) < 0.5, `parked ${r.au.toFixed(2)} AU out, ${r.elev.toFixed(1)} deg above the plane`);
+  assert.ok(trip.frames > 20 && trip.offCentre < 3, `the Sun stayed within ${trip.offCentre.toFixed(2)} deg of the centre`);
+  assert.ok(trip.turnAfter < 0.5, `turned ${trip.turnAfter.toFixed(2)} deg after stopping`);
+  await shot(page, 'home-from-the-plane');
   assert.deepEqual(page.errors, []);
   await ctx.close();
 });
@@ -477,11 +538,16 @@ await check('flying at warp towards the Sun drops out of warp in the Solar Syste
   await ctx.close();
 });
 
-await check('the autopilot flies from the stars to Jupiter, parks, and stays with it as time runs fast', async () => {
+await check('the autopilot flies from the stars to Jupiter with it centred, parks, and stays with it as time runs fast', async () => {
   const { ctx, page } = await newPage(browser);
   await app(page, () => window.starfield.flyToTarget({ kind: 'body', id: 'jupiter' }));
   assert.equal(await app(page, () => window.starfield.ship.autopilot && window.starfield.ship.target.kind), 'body');
+  await watchTrip(page, 'jupiter');
   await page.waitForFunction(() => !window.starfield.ship.autopilot, null, { timeout: 60000 });
+  await page.waitForTimeout(800);
+  const trip = await tripResult(page);
+  assert.ok(trip.frames > 20 && trip.offCentre < 3, `Jupiter stayed within ${trip.offCentre.toFixed(2)} deg of the centre on the way in`);
+  assert.ok(trip.turnAfter < 0.5, `turned ${trip.turnAfter.toFixed(2)} deg after stopping`);
   const dist = () => app(page, () => {
     const a = window.starfield, j = a.solar.get('jupiter'), p = a.ship.pos.map((x) => x * 206264.80624709636);
     return Math.hypot(p[0] - j.pos[0], p[1] - j.pos[1], p[2] - j.pos[2]) / j.Req;

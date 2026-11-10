@@ -240,9 +240,10 @@ export class App {
     // Streak exposure: a fraction of a frame up to a few frames; longer while boosting.
     const tau = (0.2 + 3.6 * s.blur ** 1.3) / 60 * (1 + 1.8 * ship.boost);
     transpose3(quat.toMat3(ship.orientationAgo(tau), this.m3), this.viewPrev);
-    const fwd = ship.forward;
+    // Streaks follow the direction of travel, which on autopilot is not always the view's.
+    const dir = ship.heading;
     const back = ship.speed * tau;
-    this.tail[0] = fwd[0] * back; this.tail[1] = fwd[1] * back; this.tail[2] = fwd[2] * back;
+    this.tail[0] = dir[0] * back; this.tail[1] = dir[1] * back; this.tail[2] = dir[2] * back;
     for (let k = 0; k < 3; k++) {
       this.camHi[k] = ship.pos[k];
       this.camLo[k] = ship.pos[k] - this.camHi[k];
@@ -255,7 +256,7 @@ export class App {
     const omega = Math.hypot(ship.omega[0], ship.omega[1], ship.omega[2]);
     const planeCount = frustumPlanes(this.view, tanX, tanY, omega * tau + 0.04, this.planes);
     const culler = this.culler;
-    const n = culler.collect(ship.pos, this.planes, planeCount, fwd, back * 1.05 + 1e-6, magLimit);
+    const n = culler.collect(ship.pos, this.planes, planeCount, dir, back * 1.05 + 1e-6, magLimit);
     this.ranges.starts = culler.starts; this.ranges.counts = culler.counts; this.ranges.n = n;
 
     // Solar System frame.
@@ -365,7 +366,7 @@ export class App {
     if (t.kind === 'body') {
       const locateBody = () => this.solar.positionPc(t.id);
       if (!autopilot) return { kind: 'body', id: t.id, name, locate: locateBody, stop: 0 };
-      // Park beside the body (it moves, so the spot moves with it), then face it.
+      // Park beside the body (it moves, so the spot moves with it), looking at it all the way.
       const stop = this.parkingDistance(t);
       const d = this.parkingDirection(t.id);
       return {
