@@ -27,6 +27,17 @@ const MOON_IN = [0.11, 0.31];    // moons: 40 -> 110 px
 const RING_FULL = 3;             // up to here in full ...
 const RING_GONE = 10;            // ... gone by here (smooth in log size)
 const BELT_IN = [0.11, 0.39];    // the asteroid belt (2.8 AU): 40 -> 140 px
+// A body too small to resolve is drawn as a star of its true magnitude. Close to resolving,
+// that is far too much: a million km from Io it is magnitude -7, which as a star swells to
+// a halo larger than the disc of the Jupiter it sits beside, and then collapses into a
+// 3-pixel disc as it resolves. So the glare (the swollen core and the halo) tapers away as
+// the body's true radius grows from GLARE_FULL to GLARE_NONE pixels, leaving a crisp dot
+// about the size of the disc it is about to become. A moon is judged by its planet's size
+// when that is larger, so it never shows more glare than the planet it circles. Seen from
+// Earth every planet is under GLARE_FULL and looks as before; the Sun keeps its glare.
+const GLARE_FULL = 0.1, GLARE_NONE = 1.0;
+const DOT_SIGMA = 1.6; // the crisp dot's core, in units of the narrowest: as bold as a bright star, without the halo
+
 // Inside a planet's own system the scene is the planet and its moons: the Sun's rings step
 // back to this fraction, over the inner nine tenths of the planet's neighbourhood.
 const HOST_KEEP = 0.4;
@@ -82,6 +93,7 @@ export class SolarView {
     this.frame = { bodies: [], orbits: [], belt: null };
     this.screen = []; // { body, x, y (CSS px), r (CSS px), visible, behind, dist (AU) }
     this.slots = new Map(); // per-body uniform sets, reused frame to frame (no garbage at 60 fps)
+    this.sizes = {};
     this.orbitSlots = new Map();
   }
 
@@ -125,6 +137,7 @@ export class SolarView {
     const cam = c.camAU;
     const v = [0, 0, 0];
     let host = 0; // how deep the camera is inside a planet's own system, 0..1
+    const sizes = this.sizes; // true radius on screen (px) of each body this frame
 
     for (const b of ss.bodies) {
       const rx = b.pos[0] - cam[0], ry = b.pos[1] - cam[1], rz = b.pos[2] - cam[2];
@@ -138,15 +151,19 @@ export class SolarView {
       let cx = 0, cy = 0;
       if (!behind) { cx = (v[0] / (-v[2] * c.tanX) * 0.5 + 0.5) * c.w; cy = (v[1] / (-v[2] * c.tanY) * 0.5 + 0.5) * c.h; }
 
-      // brightness when unresolved, exactly as the star shader does it
+      // brightness when unresolved, as the star shader does it, less the glare near resolving
       const m = ss.magnitude(b, cam);
       const dm = c.magLimit - m;
       const F = 10 ** (0.4 * Math.min(dm, 40));
       const fade = smooth(0, 0.8, dm);
       const raw = 0.13 * Math.sqrt(F) * c.gain;
-      const sigma = 0.72 * c.px * Math.min(6, Math.max(1, raw ** 0.4));
+      sizes[b.id] = rPx;
+      const scene = b.type === 'moon' ? Math.max(rPx, sizes[b.parent] || 0) : rPx; // parents come first in BODIES
+      const glare = b.id === 'sun' ? 1 : logRamp(scene, GLARE_NONE, GLARE_FULL);
+      const swell = Math.min(6, Math.max(1, raw ** 0.4));
+      const sigma = 0.72 * c.px * (glare * swell + (1 - glare) * Math.min(swell, DOT_SIGMA));
       let peak = Math.min(raw, 1.5) * fade;
-      let glow = Math.min(0.6, Math.max(0, 0.012 * (Math.sqrt(F) - 5))) * fade * c.gain;
+      let glow = Math.min(0.6, Math.max(0, 0.012 * (Math.sqrt(F) - 5))) * fade * c.gain * glare;
       const rho = 0.72 * c.px * (2.2 + 1.3 * Math.log2(1 + F / 150));
       const disc = smooth(1.2, 3.0, rPx);
       peak *= 1 - disc;

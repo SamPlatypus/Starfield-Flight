@@ -70,7 +70,9 @@ naked-eye depth and the asteroid belt and the orbits fade in.
   pole and rotation, lit from the Sun's true direction (so phases are right): Jupiter's belts,
   zones and Great Red Spot, Saturn's rings with their gaps and shadows, Earth's oceans,
   continents and clouds, the Sun's limb-darkened disc and corona. Too small to resolve, a body
-  becomes a point as bright as its visual magnitude from where you are.
+  becomes a point as bright as its visual magnitude from where you are; its glare eases away
+  as it nears the size at which it resolves, and a moon never shows more glare than its planet,
+  so Io beside a resolved Jupiter is a crisp point, not a flare.
 - **Flying among planets:** speed scales with the distance to the nearest body, so the default
   throttle crosses to it in about 7 seconds, and arriving at warp the ship drops out of warp at
   the edge of the Solar System instead of flashing through it. Near a planet or moon you move

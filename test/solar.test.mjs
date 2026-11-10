@@ -126,6 +126,63 @@ test('the Solar System view: discs, points, ring extents and orbits for one fram
   void AU_PER_PC;
 });
 
+test('an unresolved body loses its glare as it nears resolving, and a moon never out-glares its planet', async () => {
+  const { SolarSystem, ECLIPTIC_NORTH } = await import('../src/solar/system.js');
+  const { SolarView } = await import('../src/solar/view.js');
+  const { quat, transpose3 } = await import('../src/math.js');
+  const KM = 149597870.7, PX = 1.56;
+  const ss = new SolarSystem();
+  ss.update(2461354.6);
+  const sv = new SolarView(ss);
+  const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+  // what is drawn for each body from `cam`, looking at `at`: { disc, peak, sigma, glow, size (quad half-width, px) }
+  const drawn = (cam, at) => {
+    const camToWorld = quat.toMat3(quat.lookRotation(sub(at, cam), ECLIPTIC_NORTH), new Float32Array(9));
+    const f = sv.build({ camAU: cam, view: transpose3(camToWorld, new Float32Array(9)), camToWorld, tanX: 0.6494, tanY: 1.4431, w: 720, h: 1600,
+      dpr: 2, px: PX, magLimit: 6.74, gain: 1, s: 1, orbits: true, selected: null });
+    return Object.fromEntries(f.bodies.map((b) => [b.id, { disc: b.disc, peak: b.point[0], sigma: b.point[1], glow: b.point[2], size: (b.rect[2] - b.rect[0]) * 720 / 4 }]));
+  };
+  const j = ss.get('jupiter');
+  const above = (km) => j.pos.map((x, i) => x + ECLIPTIC_NORTH[i] * km / KM); // over Jupiter's pole, its moons spread round it
+
+  // 1.25 million km out (the moons are 0.6-0.9 px in radius): Jupiter is a disc, its moons crisp dots
+  const near = drawn(above(1.25e6), j.pos);
+  assert.ok(near.jupiter.disc > 0.99 && near.jupiter.peak === 0, 'Jupiter is a disc');
+  const inView = ['io', 'europa', 'ganymede', 'callisto'].filter((id) => near[id]); // the outer ones may be off the side
+  assert.ok(inView.includes('io') && inView.length >= 2, `moons in view: ${inView.join(' ')}`);
+  for (const id of inView) {
+    const m = near[id];
+    assert.ok(m.disc < 0.05, `${id} is still a point`);
+    assert.ok(m.glow < 0.03, `${id}: halo ${m.glow.toFixed(3)} (was 0.6)`);
+    assert.ok(m.sigma <= 0.72 * PX * 1.7 && m.peak > 0.9 && m.peak <= 1.5, `${id}: a crisp dot (sigma ${m.sigma.toFixed(2)} px, peak ${m.peak.toFixed(2)})`);
+    assert.ok(m.size < 10, `${id}: drawn ${m.size.toFixed(1)} px across at most, against Jupiter's ${near.jupiter.size.toFixed(0)}`);
+  }
+  // 20 million km out the moons are a twentieth of a pixel, but Jupiter is already resolving: still no flare beside it
+  const mid = drawn(above(2e7), j.pos);
+  assert.ok(mid.jupiter.disc > 0.2 && mid.jupiter.glow < 0.03, 'Jupiter resolving, without glare');
+  for (const id of ['io', 'europa', 'ganymede', 'callisto']) if (mid[id]) assert.ok(mid[id].glow < 0.03, `${id} beside it: halo ${mid[id].glow.toFixed(3)}`);
+
+  // From as far as Earth is, Jupiter and its moons are stars, exactly as before
+  const far = drawn(above(4.2 * KM), j.pos);
+  assert.ok(far.jupiter.disc === 0 && far.jupiter.glow > 0.3 && far.jupiter.sigma > 0.72 * PX * 1.5, `Jupiter from 4.2 AU: a bright star (glow ${far.jupiter.glow.toFixed(2)})`);
+
+  // Closing in on Jupiter the glare eases away before the disc appears: no step at any distance
+  let prev = null;
+  for (let km = 6 * KM; km > 3e6; km *= 0.97) {
+    const p = drawn(above(km), j.pos).jupiter;
+    if (prev) {
+      assert.ok(p.glow <= prev.glow + 0.02 || p.disc > 0, `glare only recedes (${(km / KM).toFixed(2)} AU)`);
+      assert.ok(Math.abs(p.glow - prev.glow) < 0.06 && Math.abs(p.sigma - prev.sigma) < 0.6, `no jump at ${(km / KM).toFixed(2)} AU`);
+    }
+    if (p.disc > 0) assert.ok(p.glow < 0.03, `no halo left when the disc starts (${(km / KM).toFixed(3)} AU)`);
+    prev = p;
+  }
+
+  // The Sun keeps its glare however large it looks
+  const sun = drawn([0.02, 0, 0.002], [0, 0, 0]).sun;
+  assert.ok(sun.glow > 0.5, `the Sun from 0.02 AU: glow ${sun.glow.toFixed(2)}`);
+});
+
 test('orbits show while they read as rings: in from a speck, out again when far larger than the view', async () => {
   const { SolarSystem, ECLIPTIC_NORTH } = await import('../src/solar/system.js');
   const { SolarView, ringFade } = await import('../src/solar/view.js');
