@@ -146,6 +146,11 @@ class LabelPool {
 }
 
 function setText(el, text) { if (el.textContent !== text) el.textContent = text; }
+/** Text for a `.fades` element: shown while there is some, faded out (keeping its last words) when there is none. */
+export function fadeText(el, text) {
+  if (text) setText(el, text);
+  el.classList.toggle('on', !!text);
+}
 
 export class Hud {
   constructor(app) {
@@ -165,6 +170,8 @@ export class Hud {
     this.solReadout = $('#readout .sol-dist');
     this.mode = $('#readout .mode');
     this.clock = $('#readout .clock');
+    this.place = $('#readout .place');
+    for (const el of [this.mode, this.clock, this.place]) el.classList.add('fades');
     this.toastEl = $('#toast');
     this.card = $('#card');
     this.cardTitle = this.card.querySelector('.title');
@@ -322,8 +329,9 @@ export class Hud {
       setText(this.solDist, d);
       setText(this.solReadout, `Sol ${d}`);
       setText(this.speed, formatSpeed(ship.speed));
-      setText(this.mode, ship.autopilot ? 'Autopilot' : ship.boost > 0.5 ? 'Boost' : '');
-      setText(this.clock, f.near ? this.clockText() : '');
+      fadeText(this.mode, ship.autopilot ? 'Autopilot' : ship.boost > 0.5 ? 'Boost' : '');
+      fadeText(this.clock, f.near ? this.clockText() : '');
+      fadeText(this.place, f.place || '');
     }
 
     // ---- the selected star or body

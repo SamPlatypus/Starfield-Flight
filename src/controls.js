@@ -8,7 +8,7 @@ import { densityToMag, TIME_RATES } from './settings.js';
 import { formatSpeed } from './math.js';
 import { throttleToSpeed } from './flight.js';
 import { SearchPanel, FavouritesPanel } from './panels.js';
-import { formatClock } from './hud.js';
+import { formatClock, fadeText } from './hud.js';
 
 const IDLE_MS = 4500;
 
@@ -70,6 +70,8 @@ export class Controls {
     this.speed = new VSlider($('#speed-slider'), s.throttle, (v) => { app.setThrottle(v, 'slider'); this.wake(); });
     this.density = new VSlider($('#density-slider'), s.density, (v) => { app.setDensity(v); this.wake(); });
     this.densityVal = $('#density-slider .val');
+    this.densityNow = $('#density-slider .now');
+    this.densityNow.classList.add('fades');
     this.speedCap = $('#speed-slider .cap');
 
     // Boost: hold.
@@ -263,8 +265,13 @@ export class Controls {
     const app = this.app;
     if (!this.speed.dragging && Math.abs(this.speed.value - app.ship.throttle) > 1e-4) this.speed.set(app.ship.throttle);
     if (!this.density.dragging && Math.abs(this.density.value - app.settings.density) > 1e-4) this.density.set(app.settings.density);
-    const cap = `mag ${densityToMag(app.settings.density).toFixed(1)}`;
+    const set = densityToMag(app.settings.density);
+    const cap = `mag ${set.toFixed(1)}`;
     if (this.densityVal.textContent !== cap) this.densityVal.textContent = cap;
+    // Among the planets (or under the frame-rate governor) fewer stars show than the slider
+    // says: put the limit in force under the setting.
+    const now = app.lastFrame?.magLimit ?? set;
+    fadeText(this.densityNow, Math.abs(now - set) >= 0.05 ? `now ${now.toFixed(1)}` : '');
     const sp = formatSpeed(throttleToSpeed(app.ship.throttle));
     if (this.speedEl !== sp) { this.speedEl = sp; this.speed.el.setAttribute('aria-valuetext', sp); }
     this.boostEl.classList.toggle('on', app.ship.boostHeld);

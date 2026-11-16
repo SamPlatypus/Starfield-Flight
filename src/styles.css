@@ -45,8 +45,12 @@ button { cursor: pointer; }
 #readout .speed { font-size: 20px; font-weight: 300; }
 #readout .sub { font-size: 11px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.12em; }
 #readout .sub .mode { margin-left: 8px; color: var(--sol); }
-#readout .clock { font-size: 10.5px; color: var(--dim); letter-spacing: 0.06em; margin-top: 1px; }
-#readout .clock:empty { display: none; }
+#readout .clock { font-size: 10.5px; color: var(--dim); letter-spacing: 0.06em; margin-top: 1px; min-height: 13px; }
+/* where the ship is, once it has arrived: "Solar System", "At Jupiter" */
+#readout .place { font-size: 10px; color: var(--dim); text-transform: uppercase; letter-spacing: 0.12em; margin-top: 1px; min-height: 12px; }
+/* readouts that come and go with where the ship is fade (their lines keep their room, so nothing shifts) */
+.fades { opacity: 0; transition: opacity 0.4s; }
+.fades.on { opacity: 1; }
 
 .round {
   width: 40px; height: 40px; border-radius: 50%; border: 1px solid var(--line); background: var(--glass);
@@ -74,6 +78,8 @@ button { cursor: pointer; }
 #density-slider { right: calc(var(--sar) + var(--edge) + 6px); bottom: calc(var(--sab) + 108px); height: min(26vh, 170px); }
 .slider .cap { font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--dim); margin-bottom: 8px; }
 .slider .val { font-size: 10px; color: var(--dim); margin-top: 6px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+/* under the density setting: the limit in force when the view has stepped back from it */
+.slider .now { position: absolute; top: 100%; margin-top: 1px; font-size: 10px; color: var(--dim); font-variant-numeric: tabular-nums; white-space: nowrap; }
 .slider .track {
   position: relative; flex: 1; width: 4px; border-radius: 2px; background: rgba(200, 215, 255, 0.18);
 }
@@ -262,7 +268,7 @@ button { cursor: pointer; }
 .seg button.on { background: rgba(130, 180, 255, 0.24); border-color: rgba(150, 195, 255, 0.55); }
 
 #stats {
-  position: fixed; left: calc(var(--sal) + 10px); top: calc(var(--sat) + 64px); font: 11px/1.4 ui-monospace, monospace;
+  position: fixed; left: calc(var(--sal) + 10px); top: calc(var(--sat) + 86px); font: 11px/1.4 ui-monospace, monospace;
   color: #9fe39f; text-shadow: 0 0 3px #000; white-space: pre; user-select: none; -webkit-user-select: none;
 }
 

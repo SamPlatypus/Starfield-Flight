@@ -53,7 +53,9 @@ N constellation names, Esc closes panels.
 Controls fade to near-invisible after a few seconds; the view keeps the plane of the Milky Way
 level (easing over to the planets' plane as you come in among them; turn this off in the menu
 for free flight) and banks gently into turns. Distances read in light-years among the stars, in AU and km near
-the Sun, and speeds in ly/s, AU/s or km/s to match.
+the Sun, and speeds in ly/s, AU/s or km/s to match. Near the Sun the readout adds the date, and
+once you have arrived where you are ("Solar System", "At Jupiter"); under the density slider a
+second figure shows the star limit in force whenever the view has stepped back from your setting.
 
 ## The Solar System
 

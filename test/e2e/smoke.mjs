@@ -390,6 +390,12 @@ await check('tapping the Sol marker flies home along the line of approach, the S
   assert.ok(trip.magRate > 0.05 && trip.magRate < 0.6, `it moved at up to ${trip.magRate.toFixed(2)} mag/s`);
   assert.equal(r.s, 1, 'in Solar System mode');
   assert.equal(await app(page, () => window.starfield.transition.state), 'system');
+  // the chrome follows: where the ship is, the clock, and the star limit in force under the density setting
+  await page.waitForFunction(() => document.querySelector('#readout .place').classList.contains('on'), null, { timeout: 5000 });
+  assert.equal(await page.locator('#readout .place').textContent(), 'Solar System');
+  assert.ok(await page.locator('#readout .clock.on').count() === 1, 'the clock is showing');
+  assert.equal(await page.locator('#density-slider .val').textContent(), 'mag 7.5');
+  assert.equal(await page.locator('#density-slider .now.on').textContent(), 'now 6.5');
   assert.match(await page.locator('#toast').textContent(), /Home/);
   assert.match(await page.locator('#readout .sol-dist').textContent(), /AU/);
   assert.ok(await page.locator('#labels .label.body.on').count() >= 2, 'planets are labelled');
@@ -621,18 +627,26 @@ await check('flying in by hand: out of warp at the edge, a gentle levelling, and
     const tick = () => { w.roll = Math.max(w.roll, Math.abs(a.ship.omega[2]) * 180 / Math.PI); requestAnimationFrame(tick); };
     requestAnimationFrame(tick);
   });
+  // among the stars the readout has no clock, no place and no second density figure
+  await page.waitForTimeout(300);
+  const far = await app(page, () => ['#readout .clock', '#readout .place', '#density-slider .now'].map((q) => document.querySelector(q).classList.contains('on')));
+  if (await app(page, () => window.starfield.transition.state) === 'interstellar') assert.deepEqual(far, [false, false, false]);
   await page.waitForFunction(() => window.starfield.solarS > 0.99, null, { timeout: 20000 });
   const r = await app(page, () => { const a = window.starfield; return { y: a.ship.pos[1], d: Math.hypot(...a.ship.pos), v: a.ship.speed, state: a.transition.state }; });
   assert.ok(r.y > 0, 'still on the near side of the Sun');
   assert.ok(r.v < 0.05, `slowed to ${r.v.toFixed(4)} pc/s`);
   assert.equal(r.state, 'approach');
+  await page.waitForFunction(() => document.querySelector('#readout .clock').classList.contains('on'), null, { timeout: 5000 });
   assert.match(await page.locator('#readout .clock').textContent(), /UTC/, 'the clock shows in the Sun\'s neighbourhood');
+  assert.equal(await page.locator('#readout .place.on').count(), 0, 'no place named before the ship has arrived');
 
   await page.waitForFunction(() => window.starfield.transition.state === 'system', null, { timeout: 30000 });
   const way = await app(page, () => ({ ...window.way, au: Math.hypot(...window.starfield.ship.pos) * 206264.80624709636 }));
   assert.ok(way.au < 60 && way.au > 20, `arrived ${way.au.toFixed(0)} AU out`);
   assert.deepEqual(way.changes, ['interstellar>approach', 'approach>system']);
   assert.deepEqual(way.toasts, ['Entering the Solar System']);
+  await page.waitForFunction(() => document.querySelector('#readout .place').classList.contains('on'), null, { timeout: 5000 });
+  assert.match(await page.locator('#readout .place').textContent(), /^(Solar System|At \w+)$/);
   assert.ok(way.roll > 1 && way.roll < 22, `the view levelled at up to ${way.roll.toFixed(1)} deg/s`);
   await page.waitForFunction(() => window.starfield.transition.level > 0.999, null, { timeout: 15000 });
   await page.waitForTimeout(300);
@@ -673,6 +687,7 @@ await check('the autopilot flies from the stars to Jupiter with it centred, park
   assert.ok(rings.alpha.io > 0.15 && !('neptune' in rings.alpha) && !('pluto' in rings.alpha), `rings drawn: ${Object.keys(rings.alpha).join(' ')}`);
   assert.ok(ink < 1.2, `total ring opacity ${ink.toFixed(2)} (every ring in full would be about 2.2)`);
   assert.match(await page.locator('#toast').textContent(), /Arrived: Jupiter/);
+  assert.equal(await page.locator('#readout .place.on').textContent(), 'At Jupiter');
   // a month per second: Jupiter moves ~0.3 AU/s, the ship moves with it
   const jd0 = await app(page, () => window.starfield.solar.jdUT);
   await app(page, () => window.starfield.setTimeRate(2629800));
