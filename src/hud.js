@@ -11,6 +11,8 @@ const STAR_LABELS = 7;
 const BODY_LABELS = 9;
 const CON_LABELS = 12;
 const EDGE = 34;
+const EDGE_FADE = 26;   // px inside the edge of the label area over which a label eases out
+const MARKER_GAP = 30;  // px between two arrows on the screen edge
 
 export class Projector {
   constructor() {
@@ -78,44 +80,68 @@ export function formatClock(jd) {
 
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 
-/** A pool of label elements reused frame to frame; a label keeps its element while it stays chosen. */
+const smooth01 = (t) => { const c = t < 0 ? 0 : t > 1 ? 1 : t; return c * c * (3 - 2 * c); };
+
+/**
+ * A pool of label elements reused frame to frame; a label keeps its element while it stays
+ * chosen. A label that is dropped fades out where it stands, and a new one fades in on an
+ * element that is not on screen, so a label changing sides cross-fades instead of jumping
+ * (`spare` extra elements make room for that).
+ */
 class LabelPool {
-  constructor(parent, n, cls) {
+  constructor(parent, n, cls, spare = 3) {
     this.items = [];
-    for (let i = 0; i < n; i++) {
+    this.tick = 0;
+    for (let i = 0; i < n + spare; i++) {
       const el = document.createElement('div');
       el.className = `label ${cls}`;
       el.innerHTML = '<span class="n"></span><span class="d"></span>';
       parent.appendChild(el);
-      this.items.push({ el, n: el.firstChild, d: el.lastChild, key: null, text: '', dist: '' });
+      this.items.push({ el, n: el.firstChild, d: el.lastChild, key: null, text: '', dist: '', alpha: '', freed: 0 });
     }
   }
   get keys() { return new Set(this.items.filter((l) => l.key !== null).map((l) => l.key)); }
-  /** Hides the label showing `key` at once (no fade), e.g. when its marker takes over. */
-  drop(key) {
-    const l = this.items.find((x) => x.key === key);
-    if (!l) return;
+  release(l) {
     l.key = null;
-    l.el.classList.add('instant');
+    l.freed = this.tick;
     l.el.classList.remove('on');
-    requestAnimationFrame(() => l.el.classList.remove('instant'));
+    if (l.alpha !== '') { l.alpha = ''; l.el.style.opacity = ''; }
   }
-  hideAll() { for (const l of this.items) if (l.key !== null) { l.key = null; l.el.classList.remove('on'); } }
-  /** Shows `chosen` ([{ key, ... }]) with `place(label, item, fresh)`, hiding the rest. */
+  /** Hides at once (no fade) the labels whose key passes `test`, e.g. when a marker takes over. */
+  dropWhere(test) {
+    for (const l of this.items) {
+      if (l.key === null || !test(l.key)) continue;
+      l.el.classList.add('instant');
+      this.release(l);
+      requestAnimationFrame(() => l.el.classList.remove('instant'));
+    }
+  }
+  hideAll() { for (const l of this.items) if (l.key !== null) this.release(l); }
+  /** How strongly a label shows (0..1): eases it in and out with what it labels. */
+  setAlpha(l, a = 1) {
+    const v = a >= 0.99 ? '' : a.toFixed(2);
+    if (l.alpha !== v) { l.alpha = v; l.el.style.opacity = v; }
+  }
+  /** Shows `chosen` ([{ key, alpha?, ... }]) with `place(label, item, fresh)`, hiding the rest. */
   assign(chosen, place) {
+    this.tick++;
     const byKey = new Map(chosen.map((c) => [c.key, c]));
-    const free = [];
+    const idle = [], leaving = [];
     for (const l of this.items) {
       const c = l.key !== null ? byKey.get(l.key) : undefined;
-      if (c) { place(l, c, false); byKey.delete(l.key); } else free.push(l);
+      if (c) { place(l, c, false); this.setAlpha(l, c.alpha); byKey.delete(l.key); }
+      else if (l.key === null) idle.push(l);
+      else leaving.push(l);
     }
+    idle.sort((p, q) => q.freed - p.freed); // the longest hidden last, taken first
     for (const c of byKey.values()) {
-      const l = free.pop();
+      const l = idle.pop() || leaving.pop();
       if (!l) break;
       l.key = c.key; l.text = null; l.dist = null; // forces the new label's text in
       place(l, c, true);
+      this.setAlpha(l, c.alpha);
     }
-    for (const l of free) if (l.key !== null) { l.key = null; l.el.classList.remove('on'); }
+    for (const l of leaving) this.release(l);
   }
 }
 
@@ -150,6 +176,7 @@ export class Hud {
     this.conLabels = new LabelPool(labels, CON_LABELS, 'con');
     this.starLabels = new LabelPool(labels, STAR_LABELS, 'star');
     this.bodyLabels = new LabelPool(labels, BODY_LABELS, 'body');
+    this.bodySide = new Map(); // body id -> the side its label last sat on ('R', 'L' or 'B')
     this.v = [0, 0, 0];
     this.lastText = 0;
     this.showLabels = true;
@@ -176,9 +203,11 @@ export class Hud {
 
   /**
    * Places a marker on screen or as an arrow on the screen edge, keeping an edge arrow's
-   * caption off any planet disc in `bodies`. Returns { edge, x, y }.
+   * caption off any planet disc in `bodies`, and the arrow itself clear of `other`, a marker
+   * already placed (two things in the same direction would otherwise share one spot on the
+   * edge). Returns { edge, x, y }.
    */
-  placeMarker(el, arrow, tag, worldPos, proj, bodies = null) {
+  placeMarker(el, arrow, tag, worldPos, proj, bodies = null, other = null) {
     const v = proj.toView(worldPos, this.v);
     const r = this.edgeRect(proj.w, proj.h);
     let x, y, edge = false;
@@ -198,17 +227,32 @@ export class Hud {
       const l = Math.hypot(dx, dy); dx /= l; dy /= l;
       const t = Math.min(Math.abs(dx) > 1e-9 ? hx / Math.abs(dx) : Infinity, Math.abs(dy) > 1e-9 ? hy / Math.abs(dy) : Infinity);
       x = cx + dx * t; y = cy + dy * t;
+      // Next to another arrow, step along the edge; on the top or bottom edge, where the
+      // captions run along it, this one's caption also drops a line.
+      let row = 0;
+      if (other && other.edge && Math.hypot(x - other.x, y - other.y) < MARKER_GAP) {
+        if (Math.abs(dx) * hy > Math.abs(dy) * hx) { // on the left or right edge
+          const to = y >= other.y ? 1 : -1;
+          y = other.y + to * MARKER_GAP;
+          if (y < r.y0 || y > r.y1) y = other.y - to * MARKER_GAP;
+        } else {
+          const to = x >= other.x ? 1 : -1;
+          x = other.x + to * MARKER_GAP;
+          if (x < r.x0 || x > r.x1) x = other.x - to * MARKER_GAP;
+          row = 16;
+        }
+      }
       arrow.style.transform = `rotate(${Math.atan2(dy, dx)}rad)`;
       // Put the tag beside the arrow, on the side facing the middle of the screen; if a
       // planet is in the way, above or below the arrow instead.
       const tx = Math.abs(dx) < 0.45 ? 0 : dx > 0 ? -1 : 1;
       const ty = Math.abs(dy) < 0.45 ? 0 : dy > 0 ? -1 : 1;
-      const T = (a) => (a === 0 ? '-50%' : a < 0 ? 'calc(-100% - 20px)' : '20px');
-      let transform = `translate(${T(tx)}, ${T(ty)})`;
+      const T = (a, more = 0) => (a === 0 ? '-50%' : a < 0 ? `calc(-100% - ${20 + more}px)` : `${20 + more}px`);
+      let transform = `translate(${T(tx)}, ${T(ty, row)})`;
       if (bodies && bodies.length) {
         const w = 8 + 7.5 * tag.textContent.length, h = 16;
         const x0 = tx === 0 ? x - w / 2 : tx < 0 ? x - 20 - w : x + 20;
-        const y0 = ty === 0 ? y - h / 2 : ty < 0 ? y - 20 - h : y + 20;
+        const y0 = ty === 0 ? y - h / 2 : ty < 0 ? y - 20 - row - h : y + 20 + row;
         if (this.overDisc({ x0, x1: x0 + w, y0, y1: y0 + h }, bodies, null)) {
           // stack it under (or over) the arrow, kept on screen
           const cx0 = Math.min(Math.max(x - w / 2, 4), proj.w - 4 - w);
@@ -240,14 +284,15 @@ export class Hud {
     return { x0: m.x - w / 2, x1: m.x + w / 2, y0: top, y1: top + 18 };
   }
 
-  /** A marker over a big disc drops its reticle and moves its tag below the disc (and rings). */
+  /**
+   * A marker over a big disc fades its reticle out, and its tag sits below the disc (and
+   * rings) however large that is: the tag's distance follows the disc from the start, so it
+   * does not step when the reticle goes.
+   */
   setDisc(el, r, below = r) {
-    const big = r > 15;
-    el.classList.toggle('big', big);
-    if (big) {
-      const px = Math.min(below, 2000);
-      if (Math.abs((el.discR || 0) - px) > 0.5) { el.discR = px; el.style.setProperty('--r', `${px.toFixed(1)}px`); }
-    }
+    el.classList.toggle('big', r > 15);
+    const px = Math.min(below, 2000);
+    if (Math.abs((el.discR || 0) - px) > 0.5) { el.discR = px; el.style.setProperty('--r', `${px.toFixed(1)}px`); }
   }
 
   update(f) {
@@ -294,7 +339,7 @@ export class Hud {
         if (s && !s.behind) { r = s.r; below = s.ry ?? s.r; }
       } else skipStar = t.index;
       this.setDisc(this.target, r, below);
-      const m = this.placeMarker(this.target, this.targetArrow, this.targetTag, p, proj, bodies);
+      const m = this.placeMarker(this.target, this.targetArrow, this.targetTag, p, proj, bodies, solM);
       taken.push(this.markerBox(m, below, `${t.name || ''} ${this.targetDist.textContent}`));
       if (textTick) {
         setText(this.targetName, t.name || '');
@@ -306,8 +351,9 @@ export class Hud {
 
     if (this.showLabels) {
       if (f.near) this.updateBodyLabels(f, bodies, textTick, skipBody, taken); else this.bodyLabels.hideAll();
-      // In the Solar System the planets get the labels; only the brightest stars keep theirs.
-      this.updateStarLabels(f, bodies, textTick, skipStar, taken, Math.round(STAR_LABELS - 4 * Math.min(1, sS * 1.5)));
+      // Among the planets they get the labels and only the brightest stars keep theirs: the
+      // star names step back with the starfield (transition.sky), one at a time.
+      this.updateStarLabels(f, bodies, textTick, skipStar, taken, Math.round(STAR_LABELS - 4 * (f.sky || 0)));
     }
     if (this.showConNames && app.constellations) this.updateConLabels(f, bodies, taken); else this.conLabels.hideAll();
     if (this.cardTarget && textTick) this.fillCard(f);
@@ -325,7 +371,9 @@ export class Hud {
     const cinema = this.root.classList.contains('cinema');
     if (!this.blockers || this.blockW !== w || this.blockH !== h || this.blockCinema !== cinema) {
       this.blockW = w; this.blockH = h; this.blockCinema = cinema;
-      this.blockers = cinema ? [] : ['#speed-slider', '#density-slider', '#boost', '#menu-btn', '#search-btn', '#readout']
+      // the info card too, while it is open (it is measured again when it opens or its facts change)
+      this.blockers = (cinema ? [] : ['#speed-slider', '#density-slider', '#boost', '#menu-btn', '#search-btn', '#readout'])
+        .concat(this.cardTarget ? ['#card'] : [])
         .map((sel) => document.querySelector(sel)?.getBoundingClientRect())
         .filter((b) => b && b.width > 0)
         .map((b) => [b.left - 8, b.top - 8, b.right + 8, b.bottom + 8]);
@@ -382,36 +430,58 @@ export class Hud {
     return false;
   }
 
+  /** 1 well inside the area labels may use, easing to 0 at its edge. */
+  edgeAlpha(x, y, r) {
+    return smooth01(Math.min(x - r.x0, r.x1 - x, y - r.y0, r.y1 - y) / EDGE_FADE);
+  }
+
+  /**
+   * Planet and moon names. A label eases in and out with what it labels (towards the screen
+   * edge, the Sun's glare, its planet, a disc that fills the view) instead of switching; it
+   * stays on the side it is on until that side is taken, and a label already showing keeps
+   * its place against a newcomer of similar standing.
+   */
   updateBodyLabels(f, bodies, textTick, skipId, taken) {
     const { proj } = f;
     const sun = bodies.find((o) => o.body.id === 'sun');
-    if (skipId) this.bodyLabels.drop(skipId); // the target marker names it now
+    if (skipId) this.bodyLabels.dropWhere((k) => k.startsWith(`${skipId}|`)); // the target marker names it now
     const r = this.edgeRect(proj.w, proj.h);
     const blockers = this.blockerRects(proj.w, proj.h);
     const big = Math.min(proj.w, proj.h) * 0.6;
+    const shown = this.bodyLabels.keys;
     const cands = [];
     for (const s of bodies) {
       const b = s.body;
       if (b.id === 'sun' || b.id === skipId || s.behind) continue; // the Sun has the SOL tag
       if (b.type === 'moon' && !s.visible) continue;
-      if (s.x < r.x0 || s.x > r.x1 || s.y < r.y0 || s.y > r.y1 || s.r > big) continue;
-      if (b.type !== 'moon' && sun && !sun.behind && Math.hypot(s.x - sun.x, s.y - sun.y) < sun.r + 24) continue; // lost in the Sun's glare
-      if (b.type === 'moon') {
+      let alpha = this.edgeAlpha(s.x, s.y, r) * (1 - smooth01((s.r - big * 0.85) / (big * 0.15)));
+      if (b.type !== 'moon' && sun && !sun.behind) {
+        alpha *= smooth01((Math.hypot(s.x - sun.x, s.y - sun.y) - (sun.r + 24)) / 18); // coming out of the Sun's glare
+      } else if (b.type === 'moon') {
         // only once it stands clear of its planet (and its rings)
         const p = bodies.find((o) => o.body.id === b.parent);
-        if (p && !p.behind && Math.hypot((s.x - p.x) / ((p.rx ?? p.r) + 24), (s.y - p.y) / ((p.ry ?? p.r) + 24)) < 1) continue;
+        if (p && !p.behind) alpha *= smooth01((Math.hypot((s.x - p.x) / ((p.rx ?? p.r) + 24), (s.y - p.y) / ((p.ry ?? p.r) + 24)) - 1) / 0.3);
       }
+      if (alpha < 0.03) continue;
       const off = Math.max(9, (s.rx ?? s.r) + 5);
-      const tries = [this.clearBox(s.x, s.y, off, b.name, proj.w, bodies, s, 70)]; // room for "694,702 km"
-      if (s.r > 15) {
-        // a big disc may have no room beside it: then centred under it (and its rings)
-        const lw = 8 + 6.8 * b.name.length + 70, top = s.y + (s.ry ?? s.r) + 4;
-        tries.push({ below: true, x0: s.x - lw / 2, x1: s.x + lw / 2, y0: top, y1: top + 16 });
+      // where the name may go, the side it is on first: right, left, or centred under a big disc (and its rings)
+      const lw = 8 + 6.8 * b.name.length + 70; // room for "694,702 km"
+      const boxes = {
+        R: () => this.labelBox(s.x, s.y, off, b.name, proj.w, 1, 70),
+        L: () => this.labelBox(s.x, s.y, off, b.name, proj.w, -1, 70),
+        B: () => { const top = s.y + (s.ry ?? s.r) + 4; return { below: true, x0: s.x - lw / 2, x1: s.x + lw / 2, y0: top, y1: top + 16 }; },
+      };
+      const last = this.bodySide.get(b.id);
+      const order = (last ? [last] : []).concat(['R', 'L', 'B'].filter((k) => k !== last && (k !== 'B' || s.r > 15)));
+      let side = null, box = null;
+      for (const k of order) {
+        const t = boxes[k]();
+        if (t.x0 >= 2 && t.x1 <= proj.w - 2 && t.y1 <= proj.h && !this.blocked(t, blockers) && !this.overlaps(t, taken) && !this.overDisc(t, bodies, s)) { side = k; box = t; break; }
       }
-      const box = tries.find((t) => t && t.x0 >= 2 && t.x1 <= proj.w - 2 && t.y1 <= proj.h &&
-        !this.blocked(t, blockers) && !this.overlaps(t, taken) && !(t.below && this.overDisc(t, bodies, s)));
       if (!box) continue;
-      cands.push({ key: b.id, s, text: b.name, x: s.x, y: s.y, off, box, rank: (s.mag ?? 30) - 3 * Math.log2(1 + s.r) + (b.type === 'moon' ? 2 : 0) });
+      const key = `${b.id}|${side}`;
+      const rank = (s.mag ?? 30) - 3 * Math.log2(1 + s.r) + (b.type === 'moon' ? 2 : 0) - (shown.has(key) ? 3 : 0);
+      cands.push({ key, id: b.id, side, s, text: b.name, x: s.x, y: s.y, off, box, alpha, rank });
     }
     cands.sort((a, b) => a.rank - b.rank);
     const chosen = [];
@@ -420,6 +490,7 @@ export class Hud {
       if (chosen.some((o) => o.box.x1 > c.box.x0 && o.box.x0 < c.box.x1 && Math.abs(o.y - c.y) < 15)) continue;
       chosen.push(c);
       taken.push(c.box);
+      this.bodySide.set(c.id, c.side);
     }
     this.bodyLabels.assign(chosen, (l, c, fresh) => {
       if (l.text !== c.text) { l.text = c.text; l.n.textContent = c.text; }
@@ -427,9 +498,9 @@ export class Hud {
         const d = formatDistance(c.s.dist / AU_PER_PC);
         if (d !== l.dist) { l.dist = d; l.d.textContent = d; }
       }
-      l.el.style.transform = c.box.below
+      l.el.style.transform = c.side === 'B'
         ? `translate3d(${c.x.toFixed(1)}px, ${c.box.y0.toFixed(1)}px, 0) translateX(-50%)`
-        : c.box.left
+        : c.side === 'L'
           ? `translate3d(${(c.x - c.off).toFixed(1)}px, ${(c.y - 7).toFixed(1)}px, 0) translateX(-100%)`
           : `translate3d(${(c.x + c.off).toFixed(1)}px, ${(c.y - 7).toFixed(1)}px, 0)`;
       l.el.classList.add('on');
@@ -437,7 +508,7 @@ export class Hud {
   }
 
   updateStarLabels(f, bodies, textTick, skip, taken, max) {
-    if (skip >= 0) this.starLabels.drop(skip);
+    if (skip >= 0) this.starLabels.dropWhere((k) => k.startsWith(`${skip}|`));
     if (max <= 0) { this.starLabels.hideAll(); return; }
     const { proj, catalog, names, magLimit } = f;
     const v = this.v;
@@ -455,11 +526,13 @@ export class Hud {
       const m = apparentMag(catalog.absMag(s.index), d);
       if (m > magLimit - 1.6 && d > 0.3) continue;
       const [x, y] = proj.toScreen(v);
-      if (x < r.x0 || x > r.x1 || y < r.y0 || y > r.y1) continue;
+      const alpha = this.edgeAlpha(x, y, r);
+      if (alpha < 0.03) continue;
       if (bodies.length && this.occluded(x, y, bodies)) continue;
       const box = this.clearBox(x, y, 9, s.name, proj.w, bodies, null, d < 3 ? 52 : 8); // "8.60 ly" within 3 pc
       if (!box || this.blocked(box, blockers) || this.blocked(box, takenR)) continue;
-      cands.push({ key: s.index, s, m: m - (d < 0.3 ? 5 : 0), x, y, d, box });
+      // the side is part of the key: a name that has to change sides cross-fades across
+      cands.push({ key: `${s.index}|${box.left ? 'L' : 'R'}`, index: s.index, s, m: m - (d < 0.3 ? 5 : 0), x, y, d, box, alpha });
     }
     cands.sort((a, b) => a.m - b.m);
     // Keep labels that are still among the best few to avoid flicker.
@@ -491,8 +564,15 @@ export class Hud {
   updateConLabels(f, bodies, taken) {
     const cons = this.app.constellations;
     const blockers = this.blockerRects(f.proj.w, f.proj.h);
+    // A name sits at the centre of its figure's visible part, which shifts as the view turns.
+    // Names already showing go first, so a neighbour drifting close does not take one's place
+    // and leave the two cross-fading on top of each other.
+    const shown = this.conLabels.keys;
+    const places = cons.labels(f.proj, f.magLimit, CON_LABELS + 4);
+    const ordered = places.filter((p) => shown.has(p[0])).concat(places.filter((p) => !shown.has(p[0])));
     const chosen = [];
-    for (const [c, x, y] of cons.labels(f.proj, f.magLimit, CON_LABELS)) {
+    for (const [c, x, y] of ordered) {
+      if (chosen.length >= CON_LABELS) break;
       const text = cons.abbr[c];
       const box = { x0: x - 16, x1: x + 16, y0: y - 8, y1: y + 8 };
       if (this.blocked(box, blockers) || this.overlaps(box, taken)) continue;
@@ -531,10 +611,11 @@ export class Hud {
     setText(this.cardTitle, this.cardInfo.name);
     setText(this.cardSubtitle, this.cardInfo.subtitle);
     this.card.hidden = false;
+    this.blockers = null;
     this.syncFav();
     this.fillCard(app.lastFrame);
   }
-  closeCard() { this.cardTarget = null; this.card.hidden = true; }
+  closeCard() { this.cardTarget = null; this.card.hidden = true; this.blockers = null; }
 
   syncFav() {
     if (!this.cardTarget) return;
@@ -576,6 +657,6 @@ export class Hud {
       for (const [k, v] of Object.entries(b.facts || {})) facts.push([k, v]);
     }
     const html = facts.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join('');
-    if (html !== this.factsHtml) { this.factsHtml = html; this.facts.innerHTML = html; }
+    if (html !== this.factsHtml) { this.factsHtml = html; this.facts.innerHTML = html; this.blockers = null; }
   }
 }

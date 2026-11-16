@@ -111,27 +111,30 @@ button { cursor: pointer; }
 .marker {
   /* a 52px box centred on the tracked point (the transform moves its centre) */
   position: absolute; left: 0; top: 0; width: 52px; height: 52px; margin: -26px 0 0 -26px; padding: 0; border: 0;
-  background: none; will-change: transform; display: none; border-radius: 50%;
+  background: none; will-change: transform; border-radius: 50%;
+  /* a marker and its parts fade between their states (shown, on the screen edge, over a big disc) */
+  opacity: 0; visibility: hidden; transition: opacity 0.25s, visibility 0s 0.25s;
 }
-.marker.on { display: block; }
-.marker svg { position: absolute; width: 40px; height: 40px; left: 6px; top: 6px; overflow: visible; }
+.marker.on { opacity: 1; visibility: visible; transition: opacity 0.25s; }
+.marker svg { position: absolute; width: 40px; height: 40px; left: 6px; top: 6px; overflow: visible; transition: opacity 0.25s; }
 .marker .reticle { stroke-width: 1.6; fill: none; }
-.marker .arrow { display: none; }
-.marker.edge .reticle { display: none; }
-.marker.edge .arrow { display: block; }
+.marker .arrow { opacity: 0; }
+.marker.edge .reticle { opacity: 0; }
+.marker.edge .arrow { opacity: 1; }
 .marker .tag {
-  position: absolute; left: 26px; top: 26px; transform: translate(-50%, 17px); white-space: nowrap; font-size: 11px;
+  /* under the reticle, or under the disc it marks once that is larger (--r: the disc's radius) */
+  position: absolute; left: 26px; top: 26px; transform: translate(-50%, max(17px, calc(var(--r, 0px) + 6px)));
+  white-space: nowrap; font-size: 11px; transition: opacity 0.25s;
   letter-spacing: 0.12em; text-shadow: 0 0 4px #000, 0 0 8px #000; font-variant-numeric: tabular-nums;
 }
 .marker .tag b { font-weight: 600; }
 #sol { color: var(--sol); }
 #sol .reticle { stroke: var(--sol); }
 #sol .arrow { fill: var(--sol); }
-#sol.autopilot .reticle { animation: pulse 1.2s ease-in-out infinite; }
-/* over a big disc (the Sun, a planet) the reticle steps aside and the tag sits below the disc */
-.marker.big .reticle { display: none; }
-#sol.quiet .tag { display: none; }
-.marker.big:not(.edge) .tag { transform: translate(-50%, calc(var(--r, 0px) + 6px)); }
+#sol.autopilot:not(.edge):not(.big) .reticle { animation: pulse 1.2s ease-in-out infinite; }
+/* over a big disc (the Sun, a planet) the reticle steps aside */
+.marker.big .reticle { opacity: 0; }
+#sol.quiet .tag { opacity: 0; pointer-events: none; }
 #target { color: var(--target); pointer-events: none; }
 #target .reticle { stroke: var(--target); }
 #target .arrow { fill: var(--target); }
@@ -281,5 +284,5 @@ button { cursor: pointer; }
   #card { bottom: calc(var(--sab) + 10px); }
 }
 @media (prefers-reduced-motion: reduce) {
-  #sol.autopilot .reticle { animation: none; }
+  #sol.autopilot:not(.edge):not(.big) .reticle { animation: none; }
 }

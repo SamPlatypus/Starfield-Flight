@@ -512,7 +512,10 @@ await check('constellation lines draw subtly and toggle; names show when enabled
   assert.ok(on.mean > off.mean * 1.01, `lines add light: ${on.mean.toFixed(2)} vs ${off.mean.toFixed(2)} without`);
   assert.ok(on.mean < off.mean * 1.6, 'but stay subtle');
   const names = await page.locator('#labels .label.con.on').allTextContents();
-  assert.ok(names.length >= 3 && names.includes('Ori'), `constellation names: ${names.join(' ')}`);
+  // Orion and its neighbours are in view. A star's name takes precedence where the two would
+  // overlap (Betelgeuse sits where "Ori" goes), so ask for the neighbourhood, not one name.
+  const around = ['Ori', 'Tau', 'Gem', 'Aur', 'CMa', 'Lep', 'Mon', 'Eri'].filter((n) => names.includes(n));
+  assert.ok(names.length >= 3 && around.length >= 3, `constellation names: ${names.join(' ')}`);
   await shot(page, 'constellations');
   assert.deepEqual(page.errors, []);
   await ctx.close();
@@ -550,6 +553,54 @@ await check('the Solar System: planets render with names, sizes and AU / km unit
   assert.equal(await page.locator('#card .title').textContent(), 'Saturn');
   assert.match(await page.locator('#card .facts').textContent(), /From you[\s\S]*km[\s\S]*Radius[\s\S]*58,232 km/);
   await shot(page, 'saturn');
+  assert.deepEqual(page.errors, []);
+  await ctx.close();
+});
+
+await check('labels and markers: arrows keep apart on the edge, names keep off the card, states fade', async () => {
+  const { ctx, page } = await newPage(browser, { settings: { hintSeen: true, conNames: true } });
+  // Parked by Jupiter with the Sun behind the ship, and Mercury (which sits right beside the Sun) selected:
+  // both arrows want the same spot on the screen edge.
+  await app(page, () => {
+    const a = window.starfield, AU = 206264.80624709636, j = a.solar.get('jupiter'), l = Math.hypot(...j.pos);
+    const out = j.pos.map((x) => x / l);
+    a.ship.cancelTarget(); a.setThrottle(0); a.ship.speed = 0;
+    a.ship.pos = j.pos.map((x, i) => (x + out[i] * 6 * j.Req) / AU);
+    a.ship.lookAlong(out);
+    a.select({ kind: 'body', id: 'mercury' }, { card: false, turn: false });
+  });
+  await page.waitForTimeout(900);
+  const m = await app(page, () => {
+    const at = (id) => { const el = document.getElementById(id), r = el.getBoundingClientRect(); return { x: r.left + r.width / 2, y: r.top + r.height / 2, edge: el.classList.contains('edge') }; };
+    const tag = (id) => { const r = document.querySelector(`#${id} .tag`).getBoundingClientRect(); return [r.left, r.top, r.right, r.bottom]; };
+    const op = (sel) => +getComputedStyle(document.querySelector(sel)).opacity;
+    return { sol: at('sol'), target: at('target'), solTag: tag('sol'), targetTag: tag('target'),
+      arrow: op('#sol .arrow'), reticle: op('#sol .reticle'), fades: getComputedStyle(document.querySelector('#sol .arrow')).transitionProperty };
+  });
+  assert.ok(m.sol.edge && m.target.edge, 'both the Sun and Mercury are off screen');
+  const gap = Math.hypot(m.sol.x - m.target.x, m.sol.y - m.target.y);
+  assert.ok(gap >= 28, `the two arrows sit ${gap.toFixed(0)} px apart`);
+  const [a, b] = [m.solTag, m.targetTag];
+  assert.ok(a[2] <= b[0] || b[2] <= a[0] || a[3] <= b[1] || b[3] <= a[1], `their captions do not overlap: ${a.map(Math.round)} / ${b.map(Math.round)}`);
+  assert.ok(m.arrow === 1 && m.reticle === 0 && /opacity/.test(m.fades), 'on the edge the arrow has faded in for the reticle');
+
+  // Turn to face the Sun: the marker comes back on screen, and its parts swap by fading.
+  await app(page, () => { const a = window.starfield; a.selected = null; a.ship.lookAlong(a.ship.pos.map((x) => -x)); });
+  // (waits for the fades themselves: frames come slowly on software GL)
+  await page.waitForFunction(() => !document.getElementById('sol').classList.contains('edge')
+    && +getComputedStyle(document.querySelector('#sol .arrow')).opacity === 0, null, { timeout: 8000 });
+  await page.waitForFunction(() => getComputedStyle(document.getElementById('target')).visibility === 'hidden', null, { timeout: 8000 });
+
+  // With a card open, no name sits on it.
+  await app(page, () => { const a = window.starfield; a.select({ kind: 'body', id: 'jupiter' }, { turn: false }); });
+  await page.waitForTimeout(900);
+  const over = await app(page, () => {
+    const c = document.getElementById('card').getBoundingClientRect();
+    return [...document.querySelectorAll('#labels .label.on')].map((el) => [el.textContent, el.getBoundingClientRect()])
+      .filter(([, r]) => r.right > c.left && r.left < c.right && r.bottom > c.top && r.top < c.bottom).map(([t]) => t);
+  });
+  assert.equal(await page.locator('#card').isVisible(), true);
+  assert.deepEqual(over, [], `names on the card: ${over.join(', ')}`);
   assert.deepEqual(page.errors, []);
   await ctx.close();
 });

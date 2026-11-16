@@ -93,7 +93,11 @@ naked-eye depth and the asteroid belt and the orbits fade in.
   drawn while it reads as a ring: it fades in as it grows from a speck and out again once it is
   several times larger than the view, and among a planet's moons the Sun's rings step back so
   the scene is the planet and its moons' orbits. Sizes are measured against the view, not in
-  pixels, so nothing changes when the render resolution does.
+  pixels, so nothing changes when the render resolution does. Names ease in and out with what
+  they label (towards the screen edge, the Sun's glare, a moon's planet), keep the side they
+  are on until it is taken, and cross-fade when they do change sides; markers fade between
+  their reticle, their edge arrow and the bare caption over a disc, and two arrows that point
+  the same way off screen sit side by side.
 - **Clock:** the planets move in real time. In the menu, run the clock at up to a year per
   second, pause it, or go back to now (AD 1000–3000).
 

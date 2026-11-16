@@ -320,6 +320,7 @@ export class App {
     lf.now = now;
     lf.solarS = sS;
     lf.near = tr.near;
+    lf.sky = tr.sky;
     lf.bodies = this.solarView.screen;
     this.hud.update(lf);
     if ((this.frameNo++ & 7) === 0) {
